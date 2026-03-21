@@ -1,41 +1,28 @@
 'use client';
 
+import { useEffect, useMemo, useState } from 'react';
 import { useParams } from 'next/navigation';
-import { useEffect, useState } from 'react';
-import { usePrivy } from '@privy-io/react-auth';
-import { useAccount, useReadContract, useWriteContract, useWaitForTransactionReceipt } from 'wagmi';
-import { formatUnits } from 'viem';
+import { useAccount, useReadContract } from 'wagmi';
 import { subnameExists, getLeaseRecords, findLeaseIdByEnsName } from '@/lib/ens';
-import {
-  LEASE_MANAGER_ADDRESS,
-  MOCK_USDC_ADDRESS,
-  leaseManagerAbi,
-  mockUsdcAbi,
-} from '@/lib/contracts';
+import { LEASE_MANAGER_ADDRESS, leaseManagerAbi } from '@/lib/contracts';
+import { PaymentCard } from '@/components/PaymentCard';
+import { WalletConnect } from '@/components/WalletConnect';
+import { TransactionStatus } from '@/components/TransactionStatus';
+import { usePayRent } from '@/hooks/usePayRent';
+import type { LeaseRecords } from '@/types';
 
-type LeaseRecords = {
-  status: string | null;
-  tenant: string | null;
-  rentAmount: string | null;
-  startDate: string | null;
-  endDate: string | null;
-  personaVerified: string | null;
-};
-
-type PageState = 'loading' | 'invalid' | 'no-wallet' | 'ready' | 'approving' | 'paying' | 'success' | 'error';
+type PageState = 'loading' | 'invalid' | 'ready';
 
 export default function PayPage() {
   const params = useParams();
-  const ensName = decodeURIComponent(params.ensName as string);
-  const { login, authenticated, ready: privyReady } = usePrivy();
+  const rawParam = params.ensName;
+  const ensName = decodeURIComponent(Array.isArray(rawParam) ? rawParam[0] : (rawParam as string));
   const { address, isConnected } = useAccount();
 
   const [pageState, setPageState] = useState<PageState>('loading');
-  const [leaseRecords, setLeaseRecords] = useState<LeaseRecords | null>(null);
+  const [records, setRecords] = useState<LeaseRecords | null>(null);
   const [leaseId, setLeaseId] = useState<bigint | null>(null);
-  const [errorMsg, setErrorMsg] = useState('');
 
-  // ─── Read lease data once we have a leaseId ───────────────────
   const { data: leaseData, refetch: refetchLease } = useReadContract({
     address: LEASE_MANAGER_ADDRESS,
     abi: leaseManagerAbi,
@@ -44,7 +31,6 @@ export default function PayPage() {
     query: { enabled: leaseId !== null },
   });
 
-  // ─── Get total due (rent + penalty) ───────────────────────────
   const { data: totalDue, refetch: refetchTotalDue } = useReadContract({
     address: LEASE_MANAGER_ADDRESS,
     abi: leaseManagerAbi,
@@ -53,7 +39,6 @@ export default function PayPage() {
     query: { enabled: leaseId !== null },
   });
 
-  // ─── Get current penalty ──────────────────────────────────────
   const { data: currentPenalty } = useReadContract({
     address: LEASE_MANAGER_ADDRESS,
     abi: leaseManagerAbi,
@@ -62,193 +47,65 @@ export default function PayPage() {
     query: { enabled: leaseId !== null },
   });
 
-  // ─── Check USDC allowance ─────────────────────────────────────
-  const { data: allowance, refetch: refetchAllowance } = useReadContract({
-    address: MOCK_USDC_ADDRESS,
-    abi: mockUsdcAbi,
-    functionName: 'allowance',
-    args: address ? [address, LEASE_MANAGER_ADDRESS] : undefined,
-    query: { enabled: !!address },
-  });
+  const payRent = usePayRent({ leaseId, totalDue: totalDue as bigint | undefined });
 
-  // ─── Check USDC balance ───────────────────────────────────────
-  const { data: usdcBalance, refetch: refetchBalance } = useReadContract({
-    address: MOCK_USDC_ADDRESS,
-    abi: mockUsdcAbi,
-    functionName: 'balanceOf',
-    args: address ? [address] : undefined,
-    query: { enabled: !!address },
-  });
-
-  // ─── Write contracts ──────────────────────────────────────────
-  const {
-    writeContract: writeApprove,
-    data: approveTxHash,
-    isPending: approveIsPending,
-  } = useWriteContract();
-
-  const {
-    writeContract: writePayRent,
-    data: payTxHash,
-    isPending: payIsPending,
-  } = useWriteContract();
-
-  // ─── Mint USDC ───────────────────────────────────────────────
-  const {
-    writeContract: writeMint,
-    data: mintTxHash,
-    isPending: mintIsPending,
-  } = useWriteContract();
-
-  const { isLoading: mintIsConfirming, isSuccess: mintIsConfirmed } =
-    useWaitForTransactionReceipt({ hash: mintTxHash });
-
-  const { isLoading: approveIsConfirming, isSuccess: approveIsConfirmed } =
-    useWaitForTransactionReceipt({ hash: approveTxHash });
-
-  const { isLoading: payIsConfirming, isSuccess: payIsConfirmed } =
-    useWaitForTransactionReceipt({ hash: payTxHash });
-
-  // ─── Mint USDC refetch ───────────────────────────────────────
   useEffect(() => {
-    if (mintIsConfirmed) {
-      refetchBalance();
-    }
-  }, [mintIsConfirmed, refetchBalance]);
-
-  function handleMintUSDC() {
-    if (!address) return;
-    writeMint({
-      address: MOCK_USDC_ADDRESS,
-      abi: mockUsdcAbi,
-      functionName: 'mint',
-      args: [address, BigInt(10000) * BigInt(10 ** 6)],
-    });
-  }
-
-  // ─── Step 1: Validate ENS name and fetch lease records ────────
-  useEffect(() => {
-    async function validate() {
+    async function validatePaymentLink() {
       try {
         const exists = await subnameExists(ensName);
         if (!exists) {
           setPageState('invalid');
           return;
         }
-        const records = await getLeaseRecords(ensName);
-        if (!records.status || records.status !== 'active') {
+
+        const nextRecords = await getLeaseRecords(ensName);
+        if (!nextRecords.status || nextRecords.status !== 'active') {
           setPageState('invalid');
           return;
         }
-        setLeaseRecords(records);
+
+        const nextLeaseId = await findLeaseIdByEnsName(ensName);
+        if (nextLeaseId === null) {
+          setPageState('invalid');
+          return;
+        }
+
+        setRecords(nextRecords);
+        setLeaseId(nextLeaseId);
+        setPageState('ready');
       } catch {
         setPageState('invalid');
       }
     }
-    validate();
+
+    validatePaymentLink();
   }, [ensName]);
 
-  // ─── Step 2: Resolve leaseId from ENS name via contract ────────
   useEffect(() => {
-    if (!leaseRecords) return;
-    async function resolveLeaseId() {
-      const id = await findLeaseIdByEnsName(ensName);
-      if (id === null) {
-        setPageState('invalid');
-        return;
-      }
-      setLeaseId(id);
-    }
-    resolveLeaseId();
-  }, [leaseRecords, ensName]);
-
-  // ─── Step 3: Set page state based on wallet connection ────────
-  useEffect(() => {
-    if (!leaseRecords) return;
-    if (!privyReady) return;
-    if (!authenticated || !isConnected) {
-      setPageState('no-wallet');
-      return;
-    }
-    setPageState('ready');
-  }, [leaseRecords, privyReady, authenticated, isConnected]);
-
-  // ─── Step 4: Handle approval confirmation → trigger payRent ───
-  useEffect(() => {
-    if (approveIsConfirmed && pageState === 'approving') {
-      refetchAllowance();
-      handlePayRent();
-    }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [approveIsConfirmed]);
-
-  // ─── Step 5: Handle pay confirmation ──────────────────────────
-  useEffect(() => {
-    if (payIsConfirmed) {
-      setPageState('success');
+    if (payRent.stage === 'success') {
       refetchLease();
       refetchTotalDue();
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [payIsConfirmed]);
+  }, [payRent.stage, refetchLease, refetchTotalDue]);
 
-  // ─── Actions ──────────────────────────────────────────────────
-  function handleApproveAndPay() {
-    if (!totalDue || leaseId === null) return;
-
-    const needsApproval = !allowance || allowance < totalDue;
-
-    if (needsApproval) {
-      setPageState('approving');
-      writeApprove({
-        address: MOCK_USDC_ADDRESS,
-        abi: mockUsdcAbi,
-        functionName: 'approve',
-        args: [LEASE_MANAGER_ADDRESS, totalDue],
-      }, {
-        onError: (err) => {
-          setErrorMsg(err.message);
-          setPageState('error');
-        },
-      });
-    } else {
-      handlePayRent();
-    }
-  }
-
-  function handlePayRent() {
-    if (leaseId === null) return;
-    setPageState('paying');
-    writePayRent({
-      address: LEASE_MANAGER_ADDRESS,
-      abi: leaseManagerAbi,
-      functionName: 'payRent',
-      args: [leaseId],
-    }, {
-      onError: (err) => {
-        setErrorMsg(err.message);
-        setPageState('error');
-      },
-    });
-  }
-
-  // ─── Derived values ───────────────────────────────────────────
-  const rentAmount = leaseRecords?.rentAmount ? BigInt(leaseRecords.rentAmount) : BigInt(0);
-  const penalty = currentPenalty ?? BigInt(0);
-  const accruedPenalty = leaseData ? (leaseData as { accruedPenalty: bigint }).accruedPenalty : BigInt(0);
-  const total = totalDue ?? BigInt(0);
-  const isLate = penalty > BigInt(0) || accruedPenalty > BigInt(0);
-  const hasBalance = usdcBalance !== undefined && total > BigInt(0) && usdcBalance >= total;
+  const rentAmount = records?.rentAmount ? BigInt(records.rentAmount) : 0n;
+  const accruedPenalty = leaseData ? (leaseData as { accruedPenalty: bigint }).accruedPenalty : 0n;
+  const livePenalty = (currentPenalty as bigint | undefined) ?? 0n;
+  const combinedPenalty = livePenalty + accruedPenalty;
+  const dueAmount = (totalDue as bigint | undefined) ?? 0n;
 
   const nextDueDate = leaseData
     ? new Date(Number((leaseData as { nextDueDate: bigint }).nextDueDate) * 1000)
     : null;
 
-  const endDate = leaseRecords?.endDate
-    ? new Date(Number(leaseRecords.endDate) * 1000)
-    : null;
+  const endDate = records?.endDate ? new Date(Number(records.endDate) * 1000) : null;
 
-  // ─── Render ───────────────────────────────────────────────────
+  const hasWallet = Boolean(isConnected && address);
+  const needsApproval = useMemo(() => {
+    if (!dueAmount) return false;
+    return (payRent.allowance ?? 0n) < dueAmount;
+  }, [payRent.allowance, dueAmount]);
+
   if (pageState === 'loading') {
     return (
       <div className="min-h-screen flex items-center justify-center bg-gray-50">
@@ -264,10 +121,11 @@ export default function PayPage() {
     return (
       <div className="min-h-screen flex items-center justify-center bg-gray-50">
         <div className="bg-white rounded-2xl shadow-lg p-8 max-w-md w-full mx-4 text-center">
-          <div className="text-red-500 text-5xl mb-4">&#x2718;</div>
+          <div className="text-red-500 text-5xl mb-4">X</div>
           <h1 className="text-2xl font-bold text-gray-900 mb-2">Invalid Payment Link</h1>
           <p className="text-gray-600 mb-1">
-            The ENS name <span className="font-mono font-semibold">{ensName}</span> does not exist or has no valid active lease.
+            The ENS name <span className="font-mono font-semibold break-all">{ensName}</span> does not
+            exist or has no valid active lease.
           </p>
           <p className="text-sm text-gray-400 mt-4">
             This link may be fake or the lease may have been terminated.
@@ -280,155 +138,102 @@ export default function PayPage() {
   return (
     <div className="min-h-screen flex items-center justify-center bg-gray-50 p-4">
       <div className="bg-white rounded-2xl shadow-lg p-8 max-w-md w-full">
-        {/* Header */}
-        <div className="text-center mb-6">
-          <h1 className="text-2xl font-bold text-gray-900">Pay Rent</h1>
-          <p className="text-sm font-mono text-blue-600 mt-1">{ensName}</p>
-          {leaseRecords?.personaVerified === 'true' && (
-            <span className="inline-flex items-center gap-1 mt-2 px-2 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-700">
-              &#x2713; Identity Verified
-            </span>
-          )}
-        </div>
+        <PaymentCard
+          ensName={ensName}
+          monthlyRent={rentAmount}
+          penalty={combinedPenalty}
+          totalDue={dueAmount}
+          nextDueDate={nextDueDate}
+          endDate={endDate}
+          verifiedLease
+          personaVerified={records?.personaVerified === 'true'}
+        />
 
-        {/* Lease Details */}
-        <div className="bg-gray-50 rounded-xl p-4 mb-6 space-y-3">
-          <div className="flex justify-between text-sm">
-            <span className="text-gray-500">Monthly Rent</span>
-            <span className="font-semibold">{formatUnits(rentAmount, 6)} USDC</span>
-          </div>
+        <div className="space-y-3">
+          <button
+            onClick={() => payRent.mintTestUsdc()}
+            disabled={!hasWallet || payRent.minting}
+            className="w-full bg-green-500 hover:bg-green-600 disabled:bg-gray-300 text-white font-semibold py-3 px-4 rounded-xl transition-colors"
+          >
+            {payRent.minting ? 'Minting...' : 'Mint 10,000 USDC'}
+          </button>
 
-          {isLate && (
-            <>
-              <div className="flex justify-between text-sm">
-                <span className="text-red-500">Late Penalty</span>
-                <span className="font-semibold text-red-600">
-                  +{formatUnits(penalty + accruedPenalty, 6)} USDC
-                </span>
-              </div>
-              <div className="border-t border-red-200 my-1" />
-            </>
-          )}
-
-          <div className="flex justify-between text-base font-bold">
-            <span>Total Due</span>
-            <span className={isLate ? 'text-red-600' : 'text-gray-900'}>
-              {formatUnits(total, 6)} USDC
-            </span>
-          </div>
-
-          {nextDueDate && (
-            <div className="flex justify-between text-sm">
-              <span className="text-gray-500">Due Date</span>
-              <span className={isLate ? 'text-red-500 font-medium' : 'text-gray-700'}>
-                {nextDueDate.toLocaleDateString()}
-                {isLate && ' (OVERDUE)'}
-              </span>
-            </div>
-          )}
-
-          {endDate && (
-            <div className="flex justify-between text-sm">
-              <span className="text-gray-500">Lease End</span>
-              <span className="text-gray-700">{endDate.toLocaleDateString()}</span>
-            </div>
-          )}
-        </div>
-
-        {/* Wallet Balance + Mint */}
-        {isConnected && usdcBalance !== undefined && (
-          <div className="flex items-center justify-between mb-4 px-1">
-            <div>
-              <p className="text-xs text-gray-500">Your USDC Balance</p>
-              <p className={`text-sm font-semibold ${hasBalance ? 'text-gray-700' : 'text-red-500'}`}>
-                {formatUnits(usdcBalance, 6)} USDC
-                {!hasBalance && ' (insufficient)'}
-              </p>
-            </div>
+          {hasWallet ? (
             <button
-              onClick={handleMintUSDC}
-              disabled={mintIsPending || mintIsConfirming}
-              className="bg-green-500 hover:bg-green-600 disabled:bg-gray-300 text-white font-medium py-1.5 px-3 rounded-xl transition-colors text-xs"
+              onClick={() => (needsApproval ? payRent.approve() : payRent.pay())}
+              disabled={!payRent.canAfford || dueAmount === 0n || payRent.approving || payRent.paying}
+              className="w-full bg-blue-600 hover:bg-blue-700 disabled:bg-gray-300 disabled:cursor-not-allowed text-white font-semibold py-3 px-4 rounded-xl transition-colors"
             >
-              {mintIsPending ? 'Confirm...' : mintIsConfirming ? 'Minting...' : 'Mint 10k USDC'}
+              {!payRent.canAfford
+                ? 'Insufficient USDC Balance'
+                : needsApproval
+                  ? 'Approve USDC'
+                  : `Pay ${Number(dueAmount) / 1e6} USDC`}
             </button>
+          ) : (
+            <div className="bg-blue-50 border border-blue-200 rounded-xl p-3 text-sm text-blue-700">
+              Connect your tenant wallet to mint USDC and pay rent.
+            </div>
+          )}
+        </div>
+
+        {(payRent.approving || payRent.paying || payRent.minting) && (
+          <TransactionStatus
+            isPending={false}
+            isConfirming={true}
+            pendingText="Confirm in wallet..."
+            confirmingText={
+              payRent.approving ? 'Confirming approval...' : payRent.paying ? 'Confirming payment...' : 'Confirming mint...'
+            }
+          />
+        )}
+
+        {payRent.stage === 'success' && (
+          <div className="text-center py-3">
+            <div className="text-green-500 text-4xl mb-2">OK</div>
+            <p className="font-semibold text-green-700 mb-1">Payment Successful</p>
+            {payRent.payTxHash && (
+              <p className="text-sm text-gray-500 break-all">
+                Tx: {payRent.payTxHash.slice(0, 10)}...{payRent.payTxHash.slice(-8)}
+              </p>
+            )}
           </div>
         )}
 
-        {/* Action Buttons */}
-        {pageState === 'no-wallet' && (
-          <button
-            onClick={login}
-            className="w-full bg-blue-600 hover:bg-blue-700 text-white font-semibold py-3 px-4 rounded-xl transition-colors"
-          >
-            Connect Wallet to Pay
-          </button>
-        )}
-
-        {pageState === 'ready' && (
-          <button
-            onClick={handleApproveAndPay}
-            disabled={!hasBalance || total === BigInt(0)}
-            className="w-full bg-blue-600 hover:bg-blue-700 disabled:bg-gray-300 disabled:cursor-not-allowed text-white font-semibold py-3 px-4 rounded-xl transition-colors"
-          >
-            {!hasBalance ? 'Insufficient USDC Balance' : `Pay ${formatUnits(total, 6)} USDC`}
-          </button>
-        )}
-
-        {pageState === 'approving' && (
+        {payRent.stage === 'error' && (
           <div className="text-center py-3">
-            <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 mx-auto mb-2" />
-            <p className="text-sm text-gray-600">
-              {approveIsPending ? 'Confirm approval in wallet...' : approveIsConfirming ? 'Confirming approval...' : 'Approving USDC...'}
-            </p>
-          </div>
-        )}
-
-        {pageState === 'paying' && (
-          <div className="text-center py-3">
-            <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 mx-auto mb-2" />
-            <p className="text-sm text-gray-600">
-              {payIsPending ? 'Confirm payment in wallet...' : payIsConfirming ? 'Confirming payment...' : 'Processing payment...'}
-            </p>
-          </div>
-        )}
-
-        {pageState === 'success' && (
-          <div className="text-center py-3">
-            <div className="text-green-500 text-4xl mb-2">&#x2714;</div>
-            <p className="font-semibold text-green-700 mb-1">Payment Successful!</p>
-            <p className="text-sm text-gray-500">
-              Transaction: {payTxHash ? `${payTxHash.slice(0, 10)}...${payTxHash.slice(-8)}` : ''}
-            </p>
-          </div>
-        )}
-
-        {pageState === 'error' && (
-          <div className="text-center py-3">
-            <div className="text-red-500 text-4xl mb-2">&#x2718;</div>
-            <p className="font-semibold text-red-700 mb-1">Payment Failed</p>
-            <p className="text-sm text-gray-500 mb-3 break-all">{errorMsg.slice(0, 200)}</p>
-            <button
-              onClick={() => setPageState('ready')}
-              className="text-blue-600 hover:underline text-sm"
-            >
+            <div className="text-red-500 text-4xl mb-2">X</div>
+            <p className="font-semibold text-red-700 mb-1">Transaction Failed</p>
+            <p className="text-sm text-gray-500 mb-2 break-all">{payRent.error.slice(0, 200)}</p>
+            <button onClick={payRent.resetError} className="text-blue-600 hover:underline text-sm">
               Try Again
             </button>
           </div>
         )}
 
-        {/* Connected address */}
-        {isConnected && address && (
+        {hasWallet && address && (
           <p className="text-xs text-gray-400 text-center mt-4">
             Connected: {address.slice(0, 6)}...{address.slice(-4)}
           </p>
         )}
 
-        {/* Nav */}
+        {!hasWallet && (
+          <div className="mt-5">
+            <WalletConnect
+              role="tenant"
+              title="Connect Tenant Wallet"
+              description="Use email login to open your embedded wallet for payment."
+            />
+          </div>
+        )}
+
         <div className="mt-6 text-center">
-          <a href="/tenant/dashboard" className="text-sm text-gray-400 hover:text-gray-600">&larr; Back to Dashboard</a>
+          <a href="/tenant/dashboard" className="text-sm text-gray-400 hover:text-gray-600">
+            &larr; Back to Dashboard
+          </a>
         </div>
       </div>
     </div>
   );
 }
+

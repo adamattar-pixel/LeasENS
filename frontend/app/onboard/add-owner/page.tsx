@@ -1,21 +1,29 @@
 'use client';
 
-import { useState, useEffect } from 'react';
-import { usePrivy } from '@privy-io/react-auth';
-import { useAccount, useReadContract, useWriteContract, useWaitForTransactionReceipt } from 'wagmi';
+import { useEffect, useState } from 'react';
 import { namehash } from 'viem';
+import { useAccount, useReadContract, useWaitForTransactionReceipt, useWriteContract } from 'wagmi';
+import { WalletConnect } from '@/components/WalletConnect';
+import { TransactionStatus } from '@/components/TransactionStatus';
 import {
   LEASE_MANAGER_ADDRESS,
   NAME_WRAPPER_ADDRESS,
   leaseManagerAbi,
   nameWrapperAbi,
 } from '@/lib/contracts';
+import { isInjectedConnector } from '@/lib/privy';
 
-type PageState = 'form' | 'approving-pm' | 'registering' | 'success' | 'owner-approval' | 'approving-owner' | 'done' | 'error';
+type PageState =
+  | 'form'
+  | 'approving-pm'
+  | 'registering'
+  | 'success'
+  | 'approving-owner'
+  | 'done'
+  | 'error';
 
 export default function AddOwnerPage() {
-  const { login, authenticated, ready: privyReady } = usePrivy();
-  const { address, isConnected } = useAccount();
+  const { address, isConnected, connector } = useAccount();
 
   const [ownerAddress, setOwnerAddress] = useState('');
   const [label, setLabel] = useState('');
@@ -23,154 +31,134 @@ export default function AddOwnerPage() {
   const [errorMsg, setErrorMsg] = useState('');
   const [createdName, setCreatedName] = useState('');
 
+  const usingInjected = isInjectedConnector(connector);
+  const canManagePmFlow = Boolean(isConnected && address && usingInjected);
+
   const parentNode = process.env.NEXT_PUBLIC_PARENT_NODE as `0x${string}` | undefined;
   const parentEnsName = process.env.NEXT_PUBLIC_PARENT_ENS_NAME || 'residence-epfl.eth';
 
-  // Check NameWrapper approval for PM (connected wallet)
   const { data: isPMApproved, refetch: refetchPMApproval } = useReadContract({
     address: NAME_WRAPPER_ADDRESS,
     abi: nameWrapperAbi,
     functionName: 'isApprovedForAll',
-    args: address ? [address, LEASE_MANAGER_ADDRESS] : undefined,
-    query: { enabled: !!address },
+    args: canManagePmFlow ? [address, LEASE_MANAGER_ADDRESS] : undefined,
+    query: { enabled: canManagePmFlow },
   });
 
-  // Check NameWrapper approval for the owner address (if connected wallet IS the owner)
   const { data: isOwnerApproved, refetch: refetchOwnerApproval } = useReadContract({
     address: NAME_WRAPPER_ADDRESS,
     abi: nameWrapperAbi,
     functionName: 'isApprovedForAll',
     args: ownerAddress ? [ownerAddress as `0x${string}`, LEASE_MANAGER_ADDRESS] : undefined,
-    query: { enabled: !!ownerAddress && ownerAddress.startsWith('0x') && ownerAddress.length === 42 },
+    query: { enabled: ownerAddress.startsWith('0x') && ownerAddress.length === 42 },
   });
 
-  // PM approval write
-  const {
-    writeContract: writePMApproval,
-    data: pmApprovalTxHash,
-    isPending: pmApprovalIsPending,
-  } = useWriteContract();
-
-  const { isSuccess: pmApprovalIsConfirmed, isLoading: pmApprovalIsConfirming } =
-    useWaitForTransactionReceipt({ hash: pmApprovalTxHash });
-
-  // Register owner write
-  const {
-    writeContract: writeRegister,
-    data: registerTxHash,
-    isPending: registerIsPending,
-  } = useWriteContract();
-
-  const { isSuccess: registerIsConfirmed, isLoading: registerIsConfirming } =
-    useWaitForTransactionReceipt({ hash: registerTxHash });
-
-  // Owner approval write (owner connects same page)
+  const { writeContract: writePMApproval, data: pmApprovalTxHash, isPending: pmApprovalPending } =
+    useWriteContract();
+  const { writeContract: writeRegister, data: registerTxHash, isPending: registerPending } =
+    useWriteContract();
   const {
     writeContract: writeOwnerApproval,
     data: ownerApprovalTxHash,
-    isPending: ownerApprovalIsPending,
+    isPending: ownerApprovalPending,
   } = useWriteContract();
 
-  const { isSuccess: ownerApprovalIsConfirmed, isLoading: ownerApprovalIsConfirming } =
+  const { isSuccess: pmApprovalConfirmed, isLoading: pmApprovalConfirming } =
+    useWaitForTransactionReceipt({ hash: pmApprovalTxHash });
+  const { isSuccess: registerConfirmed, isLoading: registerConfirming } = useWaitForTransactionReceipt({
+    hash: registerTxHash,
+  });
+  const { isSuccess: ownerApprovalConfirmed, isLoading: ownerApprovalConfirming } =
     useWaitForTransactionReceipt({ hash: ownerApprovalTxHash });
 
-  // Handle PM approval confirmation
   useEffect(() => {
-    if (pmApprovalIsConfirmed && pageState === 'approving-pm') {
+    if (pmApprovalConfirmed && pageState === 'approving-pm') {
       refetchPMApproval();
       setPageState('form');
     }
-  }, [pmApprovalIsConfirmed, pageState, refetchPMApproval]);
+  }, [pmApprovalConfirmed, pageState, refetchPMApproval]);
 
-  // Handle register confirmation
   useEffect(() => {
-    if (registerIsConfirmed && pageState === 'registering') {
+    if (registerConfirmed && pageState === 'registering') {
       setPageState('success');
     }
-  }, [registerIsConfirmed, pageState]);
+  }, [registerConfirmed, pageState]);
 
-  // Handle owner approval confirmation
   useEffect(() => {
-    if (ownerApprovalIsConfirmed && pageState === 'approving-owner') {
+    if (ownerApprovalConfirmed && pageState === 'approving-owner') {
       refetchOwnerApproval();
       setPageState('done');
     }
-  }, [ownerApprovalIsConfirmed, pageState, refetchOwnerApproval]);
+  }, [ownerApprovalConfirmed, pageState, refetchOwnerApproval]);
 
   function handlePMApprove() {
+    if (!canManagePmFlow) return;
     setPageState('approving-pm');
-    writePMApproval({
-      address: NAME_WRAPPER_ADDRESS,
-      abi: nameWrapperAbi,
-      functionName: 'setApprovalForAll',
-      args: [LEASE_MANAGER_ADDRESS, true],
-    }, {
-      onError: (err) => {
-        setErrorMsg(err.message);
-        setPageState('error');
+    setErrorMsg('');
+    writePMApproval(
+      {
+        address: NAME_WRAPPER_ADDRESS,
+        abi: nameWrapperAbi,
+        functionName: 'setApprovalForAll',
+        args: [LEASE_MANAGER_ADDRESS, true],
       },
-    });
+      {
+        onError: (txError) => {
+          setErrorMsg(txError.message);
+          setPageState('error');
+        },
+      }
+    );
   }
 
   function handleRegister() {
-    if (!parentNode || !ownerAddress || !label) return;
+    if (!parentNode || !ownerAddress || !label || !canManagePmFlow) return;
     setPageState('registering');
+    setErrorMsg('');
     setCreatedName(`${label}.${parentEnsName}`);
-    writeRegister({
-      address: LEASE_MANAGER_ADDRESS,
-      abi: leaseManagerAbi,
-      functionName: 'registerOwner',
-      args: [parentNode, label, ownerAddress as `0x${string}`],
-    }, {
-      onError: (err) => {
-        setErrorMsg(err.message);
-        setPageState('error');
+    writeRegister(
+      {
+        address: LEASE_MANAGER_ADDRESS,
+        abi: leaseManagerAbi,
+        functionName: 'registerOwner',
+        args: [parentNode, label, ownerAddress as `0x${string}`],
       },
-    });
+      {
+        onError: (txError) => {
+          setErrorMsg(txError.message);
+          setPageState('error');
+        },
+      }
+    );
   }
 
   function handleOwnerApprove() {
     setPageState('approving-owner');
-    writeOwnerApproval({
-      address: NAME_WRAPPER_ADDRESS,
-      abi: nameWrapperAbi,
-      functionName: 'setApprovalForAll',
-      args: [LEASE_MANAGER_ADDRESS, true],
-    }, {
-      onError: (err) => {
-        setErrorMsg(err.message);
-        setPageState('error');
+    setErrorMsg('');
+    writeOwnerApproval(
+      {
+        address: NAME_WRAPPER_ADDRESS,
+        abi: nameWrapperAbi,
+        functionName: 'setApprovalForAll',
+        args: [LEASE_MANAGER_ADDRESS, true],
       },
-    });
-  }
-
-  if (!privyReady) {
-    return (
-      <div className="min-h-screen flex items-center justify-center bg-gray-50">
-        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600" />
-      </div>
+      {
+        onError: (txError) => {
+          setErrorMsg(txError.message);
+          setPageState('error');
+        },
+      }
     );
   }
 
-  if (!authenticated || !isConnected) {
+  if (!canManagePmFlow) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-gray-50 p-4">
-        <div className="bg-white rounded-2xl shadow-lg p-8 max-w-md w-full text-center">
-          <div className="text-4xl mb-3">&#x1F3E2;</div>
-          <h1 className="text-2xl font-bold text-gray-900 mb-2">Register an Owner</h1>
-          <p className="text-gray-500 mb-6">
-            Connect your Property Manager wallet to register owners under your ENS domain.
-          </p>
-          <button
-            onClick={login}
-            className="w-full bg-gray-900 hover:bg-gray-800 text-white font-semibold py-3 px-4 rounded-xl transition-colors"
-          >
-            Connect Wallet
-          </button>
-          <div className="mt-4">
-            <a href="/" className="text-sm text-gray-400 hover:text-gray-600">&larr; Back to Home</a>
-          </div>
-        </div>
+        <WalletConnect
+          role="pm"
+          title="Register an Owner"
+          description="PM onboarding requires an injected wallet. Email-only sessions are blocked."
+        />
       </div>
     );
   }
@@ -178,24 +166,17 @@ export default function AddOwnerPage() {
   return (
     <div className="min-h-screen flex items-center justify-center bg-gray-50 p-4">
       <div className="bg-white rounded-2xl shadow-lg p-8 max-w-md w-full">
-        {/* Header */}
         <div className="text-center mb-6">
-          <div className="text-3xl mb-2">&#x1F3E2;</div>
           <h1 className="text-2xl font-bold text-gray-900">Register an Owner</h1>
           <p className="text-sm text-gray-500 mt-1">
-            Create an ENS subname for a property owner under <span className="font-mono text-blue-600">{parentEnsName}</span>
-          </p>
-          <p className="text-xs text-gray-400 mt-1">
-            PM: {address?.slice(0, 6)}...{address?.slice(-4)}
+            Create owner subnames under <span className="font-mono text-blue-600">{parentEnsName}</span>
           </p>
         </div>
 
-        {/* PM NameWrapper approval */}
         {isPMApproved === false && pageState === 'form' && (
           <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 mb-6">
-            <p className="text-sm text-amber-800 mb-1 font-semibold">One-time setup required</p>
-            <p className="text-sm text-amber-700 mb-3">
-              Approve the LeaseManager contract to create subnames under your ENS name.
+            <p className="text-sm text-amber-800 mb-3">
+              One-time setup: approve LeaseManager on NameWrapper from PM wallet.
             </p>
             <button
               onClick={handlePMApprove}
@@ -207,15 +188,29 @@ export default function AddOwnerPage() {
         )}
 
         {pageState === 'approving-pm' && (
-          <div className="text-center py-6 mb-6">
-            <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 mx-auto mb-2" />
-            <p className="text-sm text-gray-600">
-              {pmApprovalIsPending ? 'Confirm in wallet...' : pmApprovalIsConfirming ? 'Confirming approval...' : 'Processing...'}
-            </p>
-          </div>
+          <TransactionStatus
+            isPending={pmApprovalPending}
+            isConfirming={pmApprovalConfirming}
+            confirmingText="Confirming PM approval..."
+          />
         )}
 
-        {/* Form */}
+        {pageState === 'registering' && (
+          <TransactionStatus
+            isPending={registerPending}
+            isConfirming={registerConfirming}
+            confirmingText="Registering owner on-chain..."
+          />
+        )}
+
+        {pageState === 'approving-owner' && (
+          <TransactionStatus
+            isPending={ownerApprovalPending}
+            isConfirming={ownerApprovalConfirming}
+            confirmingText="Confirming owner approval..."
+          />
+        )}
+
         {pageState === 'form' && isPMApproved !== false && (
           <div className="space-y-4">
             <div>
@@ -223,7 +218,7 @@ export default function AddOwnerPage() {
               <input
                 type="text"
                 value={ownerAddress}
-                onChange={(e) => setOwnerAddress(e.target.value)}
+                onChange={(event) => setOwnerAddress(event.target.value)}
                 placeholder="0x..."
                 className="w-full border border-gray-300 rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
               />
@@ -235,7 +230,7 @@ export default function AddOwnerPage() {
                 <input
                   type="text"
                   value={label}
-                  onChange={(e) => setLabel(e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, ''))}
+                  onChange={(event) => setLabel(event.target.value.toLowerCase().replace(/[^a-z0-9-]/g, ''))}
                   placeholder="dupont"
                   className="flex-1 border border-gray-300 rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                 />
@@ -243,12 +238,13 @@ export default function AddOwnerPage() {
               </div>
             </div>
 
-            {/* Preview */}
             {label && ownerAddress && (
               <div className="bg-gray-50 rounded-xl p-3 space-y-1">
                 <p className="text-xs text-gray-500">Will create:</p>
-                <p className="font-mono text-blue-600 text-sm font-semibold">{label}.{parentEnsName}</p>
-                <p className="text-xs text-gray-400">Resolves to: {ownerAddress.slice(0, 10)}...{ownerAddress.slice(-6)}</p>
+                <p className="font-mono text-blue-600 text-sm font-semibold break-all">
+                  {label}.{parentEnsName}
+                </p>
+                <p className="text-xs text-gray-400 break-all">Resolves to: {ownerAddress}</p>
               </div>
             )}
 
@@ -261,62 +257,39 @@ export default function AddOwnerPage() {
             </button>
 
             {!parentNode && (
-              <p className="text-xs text-red-500 text-center">
-                NEXT_PUBLIC_PARENT_NODE not set in .env.local
-              </p>
+              <p className="text-xs text-red-500 text-center">NEXT_PUBLIC_PARENT_NODE not set in .env.local</p>
             )}
           </div>
         )}
 
-        {/* Registering state */}
-        {pageState === 'registering' && (
-          <div className="text-center py-6">
-            <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 mx-auto mb-2" />
-            <p className="text-sm text-gray-600">
-              {registerIsPending ? 'Confirm in wallet...' : registerIsConfirming ? 'Registering owner on-chain...' : 'Processing...'}
-            </p>
-          </div>
-        )}
-
-        {/* Success — show owner approval step */}
         {pageState === 'success' && (
           <div className="text-center py-4">
-            <div className="text-green-500 text-5xl mb-3">&#x2714;</div>
-            <p className="font-semibold text-green-700 text-lg mb-2">Owner Registered!</p>
-
+            <div className="text-green-500 text-5xl mb-3">OK</div>
+            <p className="font-semibold text-green-700 text-lg mb-2">Owner Registered</p>
             <div className="bg-gray-50 rounded-xl p-4 mb-4 space-y-2">
               <p className="text-xs text-gray-500">ENS Subname</p>
-              <p className="font-mono text-blue-600 font-semibold">{createdName}</p>
-              <p className="text-xs text-gray-400">
-                Resolves to: {ownerAddress.slice(0, 10)}...{ownerAddress.slice(-6)}
-              </p>
-              <p className="text-xs text-gray-500 mt-1">Owner Node</p>
-              <p className="font-mono text-xs text-gray-400 break-all">
-                {namehash(createdName)}
-              </p>
-              <p className="text-xs text-gray-400 mt-1">
-                Lease subnames will be created under this owner (e.g. apt1.{label}.{parentEnsName})
-              </p>
+              <p className="font-mono text-blue-600 font-semibold break-all">{createdName}</p>
+              <p className="text-xs text-gray-500">Owner Node</p>
+              <p className="font-mono text-xs text-gray-400 break-all">{namehash(createdName)}</p>
               {registerTxHash && (
-                <p className="text-xs text-gray-400">
+                <p className="text-xs text-gray-400 break-all">
                   Tx: {registerTxHash.slice(0, 10)}...{registerTxHash.slice(-8)}
                 </p>
               )}
             </div>
 
-            {/* Owner approval section */}
             <div className="bg-blue-50 border border-blue-200 rounded-xl p-4 mb-4 text-left">
-              <p className="text-sm text-blue-800 font-semibold mb-1">Next: Owner must approve LeaseManager</p>
+              <p className="text-sm text-blue-800 font-semibold mb-1">
+                Next: Owner must approve LeaseManager
+              </p>
               <p className="text-sm text-blue-700 mb-3">
-                The owner needs to call <span className="font-mono text-xs">setApprovalForAll</span> on the NameWrapper so the LeaseManager can create lease subnames.
+                The owner wallet must call <span className="font-mono text-xs">setApprovalForAll</span>.
               </p>
 
-              {/* Check if the connected wallet IS the owner */}
               {address?.toLowerCase() === ownerAddress.toLowerCase() ? (
-                // Same wallet — can approve directly
                 isOwnerApproved ? (
                   <div className="bg-green-50 border border-green-200 rounded-lg p-3 text-center">
-                    <p className="text-sm text-green-700 font-semibold">&#x2713; Already approved! Ready to create leases.</p>
+                    <p className="text-sm text-green-700 font-semibold">Owner already approved.</p>
                   </div>
                 ) : (
                   <button
@@ -327,108 +300,63 @@ export default function AddOwnerPage() {
                   </button>
                 )
               ) : (
-                // Different wallet — instruct owner to do it
                 <div className="space-y-2">
-                  <p className="text-xs text-blue-600">
-                    The owner must connect wallet <span className="font-mono">{ownerAddress.slice(0, 8)}...{ownerAddress.slice(-4)}</span> and approve from the{' '}
-                    <a href="/owner/create-lease" className="underline font-semibold">Create Lease</a> page.
+                  <p className="text-xs text-blue-600 break-all">
+                    Owner must connect wallet {ownerAddress} and approve from the Create Lease page.
                   </p>
                   {isOwnerApproved === true && (
-                    <div className="bg-green-50 border border-green-200 rounded-lg p-2 text-center">
-                      <p className="text-xs text-green-700 font-semibold">&#x2713; Owner already approved!</p>
-                    </div>
+                    <p className="text-xs text-green-700 font-semibold">Owner already approved.</p>
                   )}
                   {isOwnerApproved === false && (
-                    <div className="bg-amber-50 border border-amber-200 rounded-lg p-2 text-center">
-                      <p className="text-xs text-amber-700">&#x26A0; Owner has not approved yet</p>
-                    </div>
+                    <p className="text-xs text-amber-700">Owner has not approved yet.</p>
                   )}
                 </div>
               )}
             </div>
 
-            <div className="space-y-2">
-              <a
-                href="/owner/create-lease"
-                className="block w-full bg-blue-600 hover:bg-blue-700 text-white font-semibold py-3 px-4 rounded-xl transition-colors text-center"
-              >
-                Go to Create Lease
-              </a>
-              <button
-                onClick={() => {
-                  setPageState('form');
-                  setOwnerAddress('');
-                  setLabel('');
-                  setCreatedName('');
-                }}
-                className="block w-full text-blue-600 hover:underline text-sm py-2"
-              >
-                Register Another Owner
-              </button>
-            </div>
+            <a
+              href="/owner/create-lease"
+              className="block w-full bg-blue-600 hover:bg-blue-700 text-white font-semibold py-3 px-4 rounded-xl transition-colors text-center"
+            >
+              Go to Create Lease
+            </a>
           </div>
         )}
 
-        {/* Approving owner */}
-        {pageState === 'approving-owner' && (
-          <div className="text-center py-6">
-            <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 mx-auto mb-2" />
-            <p className="text-sm text-gray-600">
-              {ownerApprovalIsPending ? 'Confirm in wallet...' : ownerApprovalIsConfirming ? 'Confirming owner approval...' : 'Processing...'}
-            </p>
-          </div>
-        )}
-
-        {/* Owner approved — done */}
         {pageState === 'done' && (
           <div className="text-center py-4">
-            <div className="text-green-500 text-5xl mb-3">&#x2714;</div>
-            <p className="font-semibold text-green-700 text-lg mb-2">Owner Ready!</p>
+            <div className="text-green-500 text-5xl mb-3">OK</div>
+            <p className="font-semibold text-green-700 text-lg mb-2">Owner Ready</p>
             <p className="text-sm text-gray-500 mb-4">
-              <span className="font-mono text-blue-600">{createdName}</span> is registered and the LeaseManager is approved. The owner can now create leases.
+              {createdName} is registered and approved. The owner can now create leases.
             </p>
-            <div className="space-y-2">
-              <a
-                href="/owner/create-lease"
-                className="block w-full bg-blue-600 hover:bg-blue-700 text-white font-semibold py-3 px-4 rounded-xl transition-colors text-center"
-              >
-                Go to Create Lease
-              </a>
-              <button
-                onClick={() => {
-                  setPageState('form');
-                  setOwnerAddress('');
-                  setLabel('');
-                  setCreatedName('');
-                }}
-                className="block w-full text-blue-600 hover:underline text-sm py-2"
-              >
-                Register Another Owner
-              </button>
-            </div>
+            <a
+              href="/owner/create-lease"
+              className="block w-full bg-blue-600 hover:bg-blue-700 text-white font-semibold py-3 px-4 rounded-xl transition-colors text-center"
+            >
+              Go to Create Lease
+            </a>
           </div>
         )}
 
-        {/* Error */}
         {pageState === 'error' && (
           <div className="text-center py-4">
-            <div className="text-red-500 text-4xl mb-2">&#x2718;</div>
+            <div className="text-red-500 text-4xl mb-2">X</div>
             <p className="font-semibold text-red-700 mb-1">Transaction Failed</p>
             <p className="text-sm text-gray-500 mb-3 break-all">{errorMsg.slice(0, 200)}</p>
-            <button
-              onClick={() => setPageState('form')}
-              className="text-blue-600 hover:underline text-sm"
-            >
+            <button onClick={() => setPageState('form')} className="text-blue-600 hover:underline text-sm">
               Try Again
             </button>
           </div>
         )}
 
-        {/* Nav */}
         <div className="mt-6 text-center">
-          <a href="/" className="text-sm text-gray-400 hover:text-gray-600">&larr; Back to Home</a>
+          <a href="/" className="text-sm text-gray-400 hover:text-gray-600">
+            &larr; Back to Home
+          </a>
         </div>
       </div>
     </div>
   );
 }
+

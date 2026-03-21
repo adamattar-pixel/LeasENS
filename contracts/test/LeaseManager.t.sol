@@ -723,6 +723,26 @@ contract LeaseManagerTest is Test {
         assertEq(tenantLeases.length, 0);
     }
 
+    
+    function test_setPersonaVerified_success() public {
+        bytes32 node = keccak256("apt1.dupont.residence-epfl.eth");
+
+        // Backend wallet in this suite is address(this), set in setUp().
+        leaseManager.setPersonaVerified(node);
+
+        assertEq(resolver.text(node, "persona.verified"), "true");
+        string memory timestamp = resolver.text(node, "persona.timestamp");
+        assertTrue(bytes(timestamp).length > 0);
+    }
+
+    function test_setPersonaVerified_revertsNonBackend() public {
+        bytes32 node = keccak256("apt1.dupont.residence-epfl.eth");
+
+        vm.prank(owner1);
+        vm.expectRevert("Only backend wallet");
+        leaseManager.setPersonaVerified(node);
+    }
+
     // ═══════════════════════════════════════════════════════════════
     // MockUSDC tests
     // ═══════════════════════════════════════════════════════════════

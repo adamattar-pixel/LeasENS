@@ -96,7 +96,7 @@ export default function VerifyPage() {
               value={ensName}
               onChange={(e) => setEnsName(e.target.value)}
               onKeyDown={(e) => e.key === 'Enter' && handleVerify()}
-              placeholder="apt1.residence-epfl.eth"
+              placeholder="apt1.dupont.residence-epfl.eth"
               className="w-full border border-gray-300 rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent font-mono"
             />
           </div>
