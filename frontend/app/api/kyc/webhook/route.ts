@@ -11,16 +11,20 @@ import { LEASE_MANAGER_ADDRESS, leaseManagerAbi } from '@/lib/contracts';
  * Uses a backend wallet to call leaseManager.setPersonaVerified(node), which
  * writes persona.verified=true + persona.timestamp to the ENS text record on-chain.
  *
- * Body: { ensName: string }
+ * Body: { sessionId: string, ensName: string }
  * Returns: { success: true, txHash: string }
  */
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const { ensName } = body;
+    const { sessionId, ensName } = body;
 
     if (!ensName) {
       return NextResponse.json({ error: 'ensName is required' }, { status: 400 });
+    }
+
+    if (!sessionId) {
+      return NextResponse.json({ error: 'sessionId is required' }, { status: 400 });
     }
 
     const pk = process.env.BACKEND_WALLET_PRIVATE_KEY;

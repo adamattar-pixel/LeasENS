@@ -1,5 +1,6 @@
 'use client';
 
+import { useEffect } from 'react';
 import { usePrivy } from '@privy-io/react-auth';
 import { useAccount, useReadContract, useWriteContract, useWaitForTransactionReceipt } from 'wagmi';
 import { formatUnits } from 'viem';
@@ -42,9 +43,11 @@ export default function TenantDashboardPage() {
   const { isSuccess: mintIsConfirmed, isLoading: mintIsConfirming } =
     useWaitForTransactionReceipt({ hash: mintTxHash });
 
-  if (mintIsConfirmed) {
-    refetchBalance();
-  }
+  useEffect(() => {
+    if (mintIsConfirmed) {
+      refetchBalance();
+    }
+  }, [mintIsConfirmed, refetchBalance]);
 
   function handleMintUSDC() {
     if (!address) return;
@@ -155,6 +158,22 @@ function TenantLeaseCard({ leaseId }: { leaseId: bigint }) {
     args: [leaseId],
   });
 
+  const { data: paymentHistory } = useReadContract({
+    address: LEASE_MANAGER_ADDRESS,
+    abi: leaseManagerAbi,
+    functionName: 'getPaymentHistory',
+    args: [leaseId],
+  });
+
+  const leaseParentNode = leaseData ? (leaseData as { parentNode: string }).parentNode : undefined;
+  const { data: ownerLabel } = useReadContract({
+    address: LEASE_MANAGER_ADDRESS,
+    abi: leaseManagerAbi,
+    functionName: 'ownerLabels',
+    args: leaseParentNode ? [leaseParentNode as `0x${string}`] : undefined,
+    query: { enabled: !!leaseParentNode },
+  });
+
   if (!leaseData) {
     return (
       <div className="bg-white rounded-2xl shadow-lg p-6 animate-pulse">
@@ -180,7 +199,9 @@ function TenantLeaseCard({ leaseId }: { leaseId: bigint }) {
   };
 
   const parentName = process.env.NEXT_PUBLIC_PARENT_ENS_NAME || 'residence-epfl.eth';
-  const ensSubname = `${lease.label}.${parentName}`;
+  const ensSubname = ownerLabel
+    ? `${lease.label}.${ownerLabel}.${parentName}`
+    : `${lease.label}.${parentName}`;
   const nextDueDate = new Date(Number(lease.nextDueDate) * 1000);
   const endDate = new Date(Number(lease.endDate) * 1000);
   const now = Date.now();
@@ -195,10 +216,6 @@ function TenantLeaseCard({ leaseId }: { leaseId: bigint }) {
           <p className="text-xs text-gray-400 mt-1">Lease #{leaseId.toString()}</p>
         </div>
         <div className="flex items-center gap-2">
-          {/* Persona verified badge - always show in tenant dashboard for active leases */}
-          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-700">
-            &#x2713; Verified
-          </span>
           {isLate && (
             <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-red-100 text-red-700">
               Overdue
@@ -235,6 +252,14 @@ function TenantLeaseCard({ leaseId }: { leaseId: bigint }) {
           <span className="text-gray-500">Lease End</span>
           <span className="text-gray-700">{endDate.toLocaleDateString()}</span>
         </div>
+        {paymentHistory && (
+          <div className="flex justify-between text-sm">
+            <span className="text-gray-500">Payments Made</span>
+            <span className="text-gray-700">
+              {(paymentHistory as [bigint[], bigint[]])[0].length} payment{(paymentHistory as [bigint[], bigint[]])[0].length !== 1 ? 's' : ''}
+            </span>
+          </div>
+        )}
       </div>
 
       {/* Pay Rent link */}

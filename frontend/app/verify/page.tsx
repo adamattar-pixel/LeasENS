@@ -41,7 +41,9 @@ export default function VerifyPage() {
         'lease.token',
         'lease.startDate',
         'lease.endDate',
+        'lease.lastPaid',
         'persona.verified',
+        'persona.timestamp',
         'role',
         'owner.address',
       ];

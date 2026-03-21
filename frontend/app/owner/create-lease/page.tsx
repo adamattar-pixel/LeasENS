@@ -1,9 +1,9 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { usePrivy } from '@privy-io/react-auth';
 import { useAccount, useWriteContract, useWaitForTransactionReceipt, useReadContract } from 'wagmi';
-import { parseUnits } from 'viem';
+import { parseUnits, namehash } from 'viem';
 import {
   LEASE_MANAGER_ADDRESS,
   NAME_WRAPPER_ADDRESS,
@@ -21,6 +21,7 @@ export default function CreateLeasePage() {
   const [label, setLabel] = useState('');
   const [rentAmount, setRentAmount] = useState('');
   const [durationMonths, setDurationMonths] = useState('12');
+  const [ownerLabel, setOwnerLabel] = useState('');
   const [penaltyBps, setPenaltyBps] = useState('50');
   const [pageState, setPageState] = useState<PageState>('form');
   const [errorMsg, setErrorMsg] = useState('');
@@ -55,9 +56,9 @@ export default function CreateLeasePage() {
   const { isSuccess: createIsConfirmed, isLoading: createIsConfirming } =
     useWaitForTransactionReceipt({ hash: createTxHash });
 
-  // Get parent node from env
-  const parentNode = process.env.NEXT_PUBLIC_PARENT_NODE as `0x${string}` | undefined;
   const parentEnsName = process.env.NEXT_PUBLIC_PARENT_ENS_NAME || 'residence-epfl.eth';
+  // Compute owner node from ownerLabel (three-tier: label.ownerLabel.parentEnsName)
+  const ownerNode = ownerLabel ? namehash(`${ownerLabel}.${parentEnsName}`) as `0x${string}` : undefined;
 
   function handleApproveNameWrapper() {
     setPageState('approving');
@@ -78,7 +79,7 @@ export default function CreateLeasePage() {
   }
 
   function handleCreateLease() {
-    if (!parentNode || !tenantAddress || !label || !rentAmount || !durationMonths) return;
+    if (!ownerNode || !tenantAddress || !label || !rentAmount || !durationMonths) return;
 
     setPageState('creating');
     const rentInUSDC = parseUnits(rentAmount, 6);
@@ -88,33 +89,38 @@ export default function CreateLeasePage() {
       abi: leaseManagerAbi,
       functionName: 'createLease',
       args: [
-        parentNode,
+        ownerNode,
         label,
         tenantAddress as `0x${string}`,
         rentInUSDC,
         BigInt(durationMonths),
         BigInt(penaltyBps),
       ],
+      gas: BigInt(600000),
     }, {
       onError: (err) => {
         setErrorMsg(err.message);
         setPageState('error');
       },
       onSuccess: () => {
-        setCreatedName(`${label}.${parentEnsName}`);
+        setCreatedName(`${label}.${ownerLabel}.${parentEnsName}`);
       },
     });
   }
 
   // Handle approval confirmation
-  if (approvalIsConfirmed && pageState === 'approving') {
-    setPageState('form');
-  }
+  useEffect(() => {
+    if (approvalIsConfirmed && pageState === 'approving') {
+      setPageState('form');
+    }
+  }, [approvalIsConfirmed, pageState]);
 
   // Handle create confirmation
-  if (createIsConfirmed && pageState === 'creating') {
-    setPageState('success');
-  }
+  useEffect(() => {
+    if (createIsConfirmed && pageState === 'creating') {
+      setPageState('success');
+    }
+  }, [createIsConfirmed, pageState]);
 
   // Not connected
   if (!privyReady) {
@@ -190,7 +196,22 @@ export default function CreateLeasePage() {
             </div>
 
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">ENS Label</label>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Your Owner ENS Label</label>
+              <div className="flex items-center gap-2">
+                <input
+                  type="text"
+                  value={ownerLabel}
+                  onChange={(e) => setOwnerLabel(e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, ''))}
+                  placeholder="dupont"
+                  className="flex-1 border border-gray-300 rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                />
+                <span className="text-sm text-gray-400 whitespace-nowrap">.{parentEnsName}</span>
+              </div>
+              <p className="text-xs text-gray-400 mt-1">The owner subname registered by the PM (e.g. dupont)</p>
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Lease Label</label>
               <div className="flex items-center gap-2">
                 <input
                   type="text"
@@ -199,7 +220,9 @@ export default function CreateLeasePage() {
                   placeholder="apt1"
                   className="flex-1 border border-gray-300 rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                 />
-                <span className="text-sm text-gray-400 whitespace-nowrap">.{parentEnsName}</span>
+                {ownerLabel && (
+                  <span className="text-sm text-gray-400 whitespace-nowrap">.{ownerLabel}.{parentEnsName}</span>
+                )}
               </div>
             </div>
 
@@ -244,26 +267,20 @@ export default function CreateLeasePage() {
             </div>
 
             {/* Preview */}
-            {label && (
+            {label && ownerLabel && (
               <div className="bg-gray-50 rounded-xl p-3">
                 <p className="text-xs text-gray-500">Will create:</p>
-                <p className="font-mono text-blue-600 text-sm font-semibold">{label}.{parentEnsName}</p>
+                <p className="font-mono text-blue-600 text-sm font-semibold">{label}.{ownerLabel}.{parentEnsName}</p>
               </div>
             )}
 
             <button
               onClick={handleCreateLease}
-              disabled={!tenantAddress || !label || !rentAmount || !parentNode}
+              disabled={!tenantAddress || !label || !ownerLabel || !rentAmount}
               className="w-full bg-blue-600 hover:bg-blue-700 disabled:bg-gray-300 disabled:cursor-not-allowed text-white font-semibold py-3 px-4 rounded-xl transition-colors"
             >
               Create Lease
             </button>
-
-            {!parentNode && (
-              <p className="text-xs text-red-500 text-center">
-                NEXT_PUBLIC_PARENT_NODE not set in .env.local
-              </p>
-            )}
           </div>
         )}
 
@@ -305,6 +322,7 @@ export default function CreateLeasePage() {
                   setPageState('form');
                   setTenantAddress('');
                   setLabel('');
+                  setOwnerLabel('');
                   setRentAmount('');
                   setCreatedName('');
                 }}

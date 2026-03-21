@@ -11,6 +11,7 @@ export const leaseManagerAbi = [
       { name: '_nameWrapper', type: 'address' },
       { name: '_publicResolver', type: 'address' },
       { name: '_paymentToken', type: 'address' },
+      { name: '_backendWallet', type: 'address' },
     ],
     stateMutability: 'nonpayable',
   },
@@ -200,6 +201,13 @@ export const leaseManagerAbi = [
     name: 'MAX_PENALTY_BPS',
     inputs: [],
     outputs: [{ name: '', type: 'uint256' }],
+    stateMutability: 'view',
+  },
+  {
+    type: 'function',
+    name: 'ownerLabels',
+    inputs: [{ name: '', type: 'bytes32' }],
+    outputs: [{ name: '', type: 'string' }],
     stateMutability: 'view',
   },
   {

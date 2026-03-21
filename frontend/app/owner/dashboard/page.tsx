@@ -47,13 +47,15 @@ export default function OwnerDashboardPage() {
   }, [terminateIsConfirmed, simulateIsConfirmed, refetchLeaseIds]);
 
   function handleTerminate(leaseId: bigint) {
+    const reason = window.prompt('Enter termination reason:');
+    if (!reason) return;
     setActionLeaseId(leaseId);
     setActionType('terminate');
     writeTerminate({
       address: LEASE_MANAGER_ADDRESS,
       abi: leaseManagerAbi,
       functionName: 'terminateLease',
-      args: [leaseId, 'Terminated by owner'],
+      args: [leaseId, reason],
     });
   }
 
@@ -196,6 +198,22 @@ function LeaseCard({
     args: [leaseId],
   });
 
+  const { data: paymentHistory } = useReadContract({
+    address: LEASE_MANAGER_ADDRESS,
+    abi: leaseManagerAbi,
+    functionName: 'getPaymentHistory',
+    args: [leaseId],
+  });
+
+  const leaseParentNode = leaseData ? (leaseData as { parentNode: string }).parentNode : undefined;
+  const { data: ownerLabel } = useReadContract({
+    address: LEASE_MANAGER_ADDRESS,
+    abi: leaseManagerAbi,
+    functionName: 'ownerLabels',
+    args: leaseParentNode ? [leaseParentNode as `0x${string}`] : undefined,
+    query: { enabled: !!leaseParentNode },
+  });
+
   if (!leaseData) {
     return (
       <div className="bg-white rounded-2xl shadow-lg p-6 animate-pulse">
@@ -221,7 +239,9 @@ function LeaseCard({
   };
 
   const parentName = process.env.NEXT_PUBLIC_PARENT_ENS_NAME || 'residence-epfl.eth';
-  const ensSubname = `${lease.label}.${parentName}`;
+  const ensSubname = ownerLabel
+    ? `${lease.label}.${ownerLabel}.${parentName}`
+    : `${lease.label}.${parentName}`;
   const nextDueDate = new Date(Number(lease.nextDueDate) * 1000);
   const endDate = new Date(Number(lease.endDate) * 1000);
   const now = Date.now();
@@ -279,6 +299,14 @@ function LeaseCard({
           <span className="text-gray-500">Lease End</span>
           <span className="text-gray-700">{endDate.toLocaleDateString()}</span>
         </div>
+        {paymentHistory && (
+          <div className="flex justify-between text-sm">
+            <span className="text-gray-500">Payments Made</span>
+            <span className="text-gray-700">
+              {(paymentHistory as [bigint[], bigint[]])[0].length} payment{(paymentHistory as [bigint[], bigint[]])[0].length !== 1 ? 's' : ''}
+            </span>
+          </div>
+        )}
       </div>
 
       {/* Payment & QR links */}

@@ -37,6 +37,7 @@ contract LeaseManager is ERC1155Holder {
     uint256                       public leaseCount;
     mapping(uint256 => uint256[]) public paymentTimestamps;
     mapping(uint256 => uint256[]) public paymentAmounts;
+    mapping(bytes32 => string)    public ownerLabels;
 
     // ─── Events ──────────────────────────────────────────────────
     event LeaseCreated(
@@ -91,6 +92,8 @@ contract LeaseManager is ERC1155Holder {
 
         // Transfer ownership to actual owner wallet
         nameWrapper.setSubnodeOwner(parentNode, label, ownerAddress, 0, expiry);
+
+        ownerLabels[ownerNode] = label;
 
         emit OwnerRegistered(parentNode, ownerNode, label, ownerAddress);
     }
@@ -178,6 +181,8 @@ contract LeaseManager is ERC1155Holder {
             "Payment failed"
         );
 
+        uint256 totalPenalty = penalty + lease.accruedPenalty;
+
         paymentTimestamps[leaseId].push(block.timestamp);
         paymentAmounts[leaseId].push(totalDue);
 
@@ -188,7 +193,7 @@ contract LeaseManager is ERC1155Holder {
         publicResolver.setText(lease.leaseNode, "lease.lastPaid", _uint2str(block.timestamp));
 
         emit RentPaid(leaseId, msg.sender, lease.rentAmount,
-            penalty + lease.accruedPenalty, lease.nextDueDate);
+            totalPenalty, lease.nextDueDate);
     }
 
     // ─── Penalty (P1) ────────────────────────────────────────────

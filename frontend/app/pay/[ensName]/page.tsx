@@ -5,7 +5,7 @@ import { useEffect, useState } from 'react';
 import { usePrivy } from '@privy-io/react-auth';
 import { useAccount, useReadContract, useWriteContract, useWaitForTransactionReceipt } from 'wagmi';
 import { formatUnits } from 'viem';
-import { subnameExists, getLeaseRecords } from '@/lib/ens';
+import { subnameExists, getLeaseRecords, findLeaseIdByEnsName } from '@/lib/ens';
 import {
   LEASE_MANAGER_ADDRESS,
   MOCK_USDC_ADDRESS,
@@ -34,13 +34,6 @@ export default function PayPage() {
   const [leaseRecords, setLeaseRecords] = useState<LeaseRecords | null>(null);
   const [leaseId, setLeaseId] = useState<bigint | null>(null);
   const [errorMsg, setErrorMsg] = useState('');
-
-  // ─── Find lease ID by scanning leases for matching tenant ─────
-  const { data: leaseCount } = useReadContract({
-    address: LEASE_MANAGER_ADDRESS,
-    abi: leaseManagerAbi,
-    functionName: 'leaseCount',
-  });
 
   // ─── Read lease data once we have a leaseId ───────────────────
   const { data: leaseData, refetch: refetchLease } = useReadContract({
@@ -79,7 +72,7 @@ export default function PayPage() {
   });
 
   // ─── Check USDC balance ───────────────────────────────────────
-  const { data: usdcBalance } = useReadContract({
+  const { data: usdcBalance, refetch: refetchBalance } = useReadContract({
     address: MOCK_USDC_ADDRESS,
     abi: mockUsdcAbi,
     functionName: 'balanceOf',
@@ -100,11 +93,38 @@ export default function PayPage() {
     isPending: payIsPending,
   } = useWriteContract();
 
+  // ─── Mint USDC ───────────────────────────────────────────────
+  const {
+    writeContract: writeMint,
+    data: mintTxHash,
+    isPending: mintIsPending,
+  } = useWriteContract();
+
+  const { isLoading: mintIsConfirming, isSuccess: mintIsConfirmed } =
+    useWaitForTransactionReceipt({ hash: mintTxHash });
+
   const { isLoading: approveIsConfirming, isSuccess: approveIsConfirmed } =
     useWaitForTransactionReceipt({ hash: approveTxHash });
 
   const { isLoading: payIsConfirming, isSuccess: payIsConfirmed } =
     useWaitForTransactionReceipt({ hash: payTxHash });
+
+  // ─── Mint USDC refetch ───────────────────────────────────────
+  useEffect(() => {
+    if (mintIsConfirmed) {
+      refetchBalance();
+    }
+  }, [mintIsConfirmed, refetchBalance]);
+
+  function handleMintUSDC() {
+    if (!address) return;
+    writeMint({
+      address: MOCK_USDC_ADDRESS,
+      abi: mockUsdcAbi,
+      functionName: 'mint',
+      args: [address, BigInt(10000) * BigInt(10 ** 6)],
+    });
+  }
 
   // ─── Step 1: Validate ENS name and fetch lease records ────────
   useEffect(() => {
@@ -128,14 +148,19 @@ export default function PayPage() {
     validate();
   }, [ensName]);
 
-  // ─── Step 2: Set leaseId (for demo, first lease; in production, use indexer) ──
+  // ─── Step 2: Resolve leaseId from ENS name via contract ────────
   useEffect(() => {
-    if (leaseRecords && leaseCount !== undefined) {
-      // For the demo, the lease ID can be determined from the URL or set to 0
-      // In production, you'd look this up via an indexer
-      setLeaseId(BigInt(0));
+    if (!leaseRecords) return;
+    async function resolveLeaseId() {
+      const id = await findLeaseIdByEnsName(ensName);
+      if (id === null) {
+        setPageState('invalid');
+        return;
+      }
+      setLeaseId(id);
     }
-  }, [leaseRecords, leaseCount]);
+    resolveLeaseId();
+  }, [leaseRecords, ensName]);
 
   // ─── Step 3: Set page state based on wallet connection ────────
   useEffect(() => {
@@ -310,14 +335,23 @@ export default function PayPage() {
           )}
         </div>
 
-        {/* Wallet Balance */}
+        {/* Wallet Balance + Mint */}
         {isConnected && usdcBalance !== undefined && (
-          <div className="flex justify-between text-sm mb-4 px-1">
-            <span className="text-gray-500">Your USDC Balance</span>
-            <span className={hasBalance ? 'text-gray-700' : 'text-red-500 font-medium'}>
-              {formatUnits(usdcBalance, 6)} USDC
-              {!hasBalance && ' (insufficient)'}
-            </span>
+          <div className="flex items-center justify-between mb-4 px-1">
+            <div>
+              <p className="text-xs text-gray-500">Your USDC Balance</p>
+              <p className={`text-sm font-semibold ${hasBalance ? 'text-gray-700' : 'text-red-500'}`}>
+                {formatUnits(usdcBalance, 6)} USDC
+                {!hasBalance && ' (insufficient)'}
+              </p>
+            </div>
+            <button
+              onClick={handleMintUSDC}
+              disabled={mintIsPending || mintIsConfirming}
+              className="bg-green-500 hover:bg-green-600 disabled:bg-gray-300 text-white font-medium py-1.5 px-3 rounded-xl transition-colors text-xs"
+            >
+              {mintIsPending ? 'Confirm...' : mintIsConfirming ? 'Minting...' : 'Mint 10k USDC'}
+            </button>
           </div>
         )}
 

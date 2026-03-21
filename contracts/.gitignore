@@ -2,3 +2,9 @@
 out/
 cache/
 lib/
+
+# Environment & secrets
+.env
+
+# Deployment artifacts
+broadcast/
