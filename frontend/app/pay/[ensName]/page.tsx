@@ -389,6 +389,11 @@ export default function PayPage() {
             Connected: {address.slice(0, 6)}...{address.slice(-4)}
           </p>
         )}
+
+        {/* Nav */}
+        <div className="mt-6 text-center">
+          <a href="/tenant/dashboard" className="text-sm text-gray-400 hover:text-gray-600">&larr; Back to Dashboard</a>
+        </div>
       </div>
     </div>
   );

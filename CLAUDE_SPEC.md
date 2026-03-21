@@ -28,10 +28,10 @@ Every decision here is final. Don't re-open these during the hackathon.
 | Network | Ethereum Sepolia | ENS NameWrapper only works cleanly on Eth Sepolia |
 | Stablecoin | MockUSDC (mintable ERC-20) | Real USDC not usably available on Sepolia |
 | Contract architecture | Single `LeaseManager.sol` | Simpler, faster to build, fewer integration points |
-| Subname ownership | Contract retains ownership (Option A) | Simplest — contract can always update text records |
+| Subname ownership | Contract retains ownership (Option A) | Contract can always update text records without permission issues |
 | Wallet — tenants | Privy embedded wallet (email login) | Non-technical users, hits AA bonus criteria |
 | Wallet — owner/PM | MetaMask / injected EOA | Technical actor, standard wallet is fine |
-| Late penalties | Include (basis points per day) | ~2h extra, strong demo moment with `setDueDateForDemo` |
+| Late penalties | Per-lease basis points per day | Configurable per lease, strong demo moment |
 | Lease termination | Include (ENS subname deletion) | High-impact demo: name stops resolving |
 | Persona KYC | Mocked — writes `persona.verified=true` to ENS text record | Hits cross-app identity bonus, no API dependency |
 | Payment UX | Clickable link `/pay/[ensName]` + QR is same URL encoded | Link is primary, QR is secondary, both same page |
@@ -80,6 +80,7 @@ The two you interact with most: `NameWrapper` and `PublicResolver`. Both are con
   ├── lease.endDate      → unix timestamp string
   ├── lease.status       → "active" | "terminated"
   ├── lease.tenant       → tenant address string
+  ├── lease.lastPaid     → unix timestamp of last payment
   ├── persona.verified   → "true"
   └── persona.timestamp  → unix timestamp of KYC verification
 
@@ -88,12 +89,13 @@ The two you interact with most: `NameWrapper` and `PublicResolver`. Both are con
   2. App resolves ENS name → checks subnameExists()
   3. App fetches lease text records + leaseId from contract
   4. App shows: amount due, penalty if late, total due, verified badge
-  5. Tenant approves MockUSDC + calls payRent(leaseId)
-  6. USDC transfers to owner, due date advances
-  7. Fake link → ENS name doesn't exist → "Invalid payment link" shown
+  5. Tenant mints MockUSDC if needed (Mint 10,000 USDC button)
+  6. Tenant approves MockUSDC + calls payRent(leaseId)
+  7. USDC transfers to owner, due date advances, payment recorded on-chain
+  8. Fake link → ENS name doesn't exist → "Invalid payment link" shown
 
 [Lease termination]
-  Owner calls terminateLease() → contract calls nameWrapper.setSubnodeOwner(..., address(0))
+  Owner calls terminateLease(leaseId, reason) → contract calls nameWrapper.setSubnodeOwner(..., address(0))
   → subname deleted → name no longer resolves → verifiable proof lease is over
 ```
 
@@ -113,7 +115,8 @@ The two you interact with most: `NameWrapper` and `PublicResolver`. Both are con
 │   ├── test/
 │   │   └── LeaseManager.t.sol
 │   ├── script/
-│   │   └── Deploy.s.sol
+│   │   ├── Deploy.s.sol
+│   │   └── SetupENS.s.sol
 │   ├── foundry.toml
 │   ├── remappings.txt
 │   └── .env
@@ -122,6 +125,7 @@ The two you interact with most: `NameWrapper` and `PublicResolver`. Both are con
 │   │   ├── layout.tsx
 │   │   ├── page.tsx
 │   │   ├── pay/[ensName]/page.tsx
+│   │   ├── verify/page.tsx
 │   │   ├── tenant/dashboard/page.tsx
 │   │   ├── owner/
 │   │   │   ├── dashboard/page.tsx
@@ -231,7 +235,9 @@ contract MockUSDC is ERC20 {
 
 Single contract handling the full lifecycle: owner onboarding, lease creation (ENS subname + text records), rent payment, late penalty, lease termination (ENS subname deletion).
 
-**Subname ownership decision (Option A)**: The contract retains permanent ownership of all lease subnames. This means it can always update text records without permission issues. The tenant's address is stored in the Lease struct and in the `lease.tenant` text record. The addr record still resolves to the tenant.
+**Subname ownership (Option A)**: The contract retains permanent ownership of all lease subnames so it can always update text records. The tenant's address is stored in the Lease struct and in the `lease.tenant` text record. The addr record still resolves to the tenant.
+
+**CRITICAL**: The contract inherits `ERC1155Holder` — required because the NameWrapper represents wrapped ENS names as ERC1155 tokens. Without this the contract cannot receive them and `createLease()` will revert.
 
 ```solidity
 // SPDX-License-Identifier: MIT
@@ -248,6 +254,7 @@ contract LeaseManager is ERC1155Holder {
     INameWrapper    public immutable nameWrapper;
     IPublicResolver public immutable publicResolver;
     IERC20          public immutable paymentToken;
+    address         public immutable backendWallet; // for setPersonaVerified
 
     uint256 public constant MONTH           = 30 days;
     uint256 public constant MAX_PENALTY_BPS = 10000; // 100% of rent
@@ -263,13 +270,18 @@ contract LeaseManager is ERC1155Holder {
         uint256 startDate;
         uint256 endDate;
         uint256 nextDueDate;
-        uint256 penaltyBps;       // basis points per day late (e.g. 50 = 0.5%/day)
-        uint256 accruedPenalty;
+        uint256 penaltyBps;       // basis points per day late, per lease (e.g. 50 = 0.5%/day)
+        uint256 accruedPenalty;   // accumulated unpaid penalty across missed months
         bool    active;
+        // FUTURE: uint256 depositAmount;
+        // FUTURE: uint256 depositHeld;
+        // FUTURE: bool depositReturned;
     }
 
     mapping(uint256 => Lease)     public leases;
     uint256                       public leaseCount;
+
+    // Full on-chain payment audit trail per lease
     mapping(uint256 => uint256[]) public paymentTimestamps;
     mapping(uint256 => uint256[]) public paymentAmounts;
 
@@ -288,10 +300,21 @@ contract LeaseManager is ERC1155Holder {
     event OwnerRegistered(bytes32 indexed parentNode, bytes32 ownerNode, string label, address ownerAddress);
 
     // ─── Constructor ─────────────────────────────────────────────
-    constructor(address _nameWrapper, address _publicResolver, address _paymentToken) {
+    constructor(
+        address _nameWrapper,
+        address _publicResolver,
+        address _paymentToken,
+        address _backendWallet
+    ) {
         nameWrapper    = INameWrapper(_nameWrapper);
         publicResolver = IPublicResolver(_publicResolver);
         paymentToken   = IERC20(_paymentToken);
+        backendWallet  = _backendWallet;
+    }
+
+    modifier onlyBackend() {
+        require(msg.sender == backendWallet, "Only backend");
+        _;
     }
 
     // ─── Owner Onboarding (P2) ───────────────────────────────────
@@ -307,7 +330,6 @@ contract LeaseManager is ERC1155Holder {
         require(ownerAddress != address(0), "Invalid owner");
         uint64 expiry = uint64(block.timestamp + 365 days);
 
-        // Create subname with this contract as temp owner to set text records
         ownerNode = nameWrapper.setSubnodeRecord(
             parentNode, label, address(this), address(publicResolver), 0, 0, expiry
         );
@@ -316,7 +338,6 @@ contract LeaseManager is ERC1155Holder {
         publicResolver.setText(ownerNode, "role", "owner");
         publicResolver.setText(ownerNode, "owner.address", _addr2str(ownerAddress));
 
-        // Transfer ownership to actual owner wallet
         nameWrapper.setSubnodeOwner(parentNode, label, ownerAddress, 0, expiry);
 
         emit OwnerRegistered(parentNode, ownerNode, label, ownerAddress);
@@ -325,8 +346,9 @@ contract LeaseManager is ERC1155Holder {
     // ─── Lease Creation (P0) ─────────────────────────────────────
     /// @notice Owner creates a lease and mints an ENS subname for the tenant.
     /// @dev Owner must have called nameWrapper.setApprovalForAll(address(this), true) first.
-    ///      The contract retains subname ownership permanently (Option A) so it can
-    ///      always update text records (e.g. lease.status after payment/termination).
+    ///      Contract retains subname ownership permanently (Option A).
+    /// @param penaltyBps Late payment penalty in basis points per day, set per lease.
+    ///                   e.g. 50 = 0.5%/day. Max 1000 (10%/day).
     function createLease(
         bytes32 parentNode,
         string calldata label,
@@ -344,18 +366,20 @@ contract LeaseManager is ERC1155Holder {
         uint256 startDate = block.timestamp;
         uint256 endDate   = startDate + (durationMonths * MONTH);
 
-        // Step 1: Mint subname — contract keeps ownership permanently
+        // Step 1: Mint subname — contract keeps ownership permanently (Option A)
+        // fuses=0: parent retains PARENT_CANNOT_CONTROL, enabling terminateLease() deletion
+        // Gas note: set explicit gas limit of 600,000 on frontend for this call
         bytes32 leaseNode = nameWrapper.setSubnodeRecord(
             parentNode,
             label,
-            address(this),            // Contract = permanent owner
+            address(this),
             address(publicResolver),
             0,
-            0,                        // No fuses burned: parent retains PARENT_CANNOT_CONTROL
+            0,
             uint64(endDate + 365 days)
         );
 
-        // Step 2: Set text records (we can do this because we own the subname)
+        // Step 2: Set all text records (possible because we own the subname)
         publicResolver.setText(leaseNode, "lease.rentAmount", _uint2str(rentAmount));
         publicResolver.setText(leaseNode, "lease.token",      "USDC");
         publicResolver.setText(leaseNode, "lease.startDate",  _uint2str(startDate));
@@ -363,10 +387,9 @@ contract LeaseManager is ERC1155Holder {
         publicResolver.setText(leaseNode, "lease.status",     "active");
         publicResolver.setText(leaseNode, "lease.tenant",     _addr2str(tenant));
 
-        // Step 3: Set addr record to tenant (name resolves to tenant's wallet)
+        // Step 3: addr record resolves to tenant's wallet
         publicResolver.setAddr(leaseNode, tenant);
 
-        // Step 4: Store lease data
         leases[leaseId] = Lease({
             parentNode:     parentNode,
             leaseNode:      leaseNode,
@@ -387,15 +410,14 @@ contract LeaseManager is ERC1155Holder {
     }
 
     // ─── Rent Payment (P0) ───────────────────────────────────────
-    /// @notice Tenant pays rent for a lease.
+    /// @notice Tenant pays rent. Handles penalty + accrued debt + due date advancement.
     /// @dev Tenant must approve this contract to spend paymentToken before calling.
-    ///      Handles penalty calculation, USDC transfer, due date advancement,
-    ///      and ENS text record update.
+    ///      totalDue = rentAmount + currentPenalty + accruedPenalty from previous missed months.
     function payRent(uint256 leaseId) external {
         Lease storage lease = leases[leaseId];
-        require(lease.active,                     "Lease not active");
-        require(msg.sender == lease.tenant,        "Only tenant can pay");
-        require(block.timestamp <= lease.endDate,  "Lease expired");
+        require(lease.active,                    "Lease not active");
+        require(msg.sender == lease.tenant,       "Only tenant can pay");
+        require(block.timestamp <= lease.endDate, "Lease expired");
 
         uint256 penalty  = calculatePenalty(leaseId);
         uint256 totalDue = lease.rentAmount + penalty + lease.accruedPenalty;
@@ -405,13 +427,14 @@ contract LeaseManager is ERC1155Holder {
             "Payment failed"
         );
 
+        // Record full payment history on-chain
         paymentTimestamps[leaseId].push(block.timestamp);
         paymentAmounts[leaseId].push(totalDue);
 
         lease.accruedPenalty = 0;
         lease.nextDueDate    = lease.nextDueDate + MONTH;
 
-        // Update text record — possible because contract owns the subname
+        // Update ENS text record — possible because contract owns the subname (Option A)
         publicResolver.setText(lease.leaseNode, "lease.lastPaid", _uint2str(block.timestamp));
 
         emit RentPaid(leaseId, msg.sender, lease.rentAmount,
@@ -419,8 +442,9 @@ contract LeaseManager is ERC1155Holder {
     }
 
     // ─── Penalty (P1) ────────────────────────────────────────────
-    /// @notice View-only: returns current penalty amount for a lease.
+    /// @notice View-only: current penalty for a lease.
     ///         Formula: rentAmount * penaltyBps * daysLate / 10000, capped at 100% of rent.
+    ///         penaltyBps is set per-lease at creation time.
     function calculatePenalty(uint256 leaseId) public view returns (uint256 penalty) {
         Lease storage lease = leases[leaseId];
         if (!lease.active || block.timestamp <= lease.nextDueDate) return 0;
@@ -432,6 +456,8 @@ contract LeaseManager is ERC1155Holder {
         if (penalty > lease.rentAmount) penalty = lease.rentAmount;
     }
 
+    /// @notice Snapshot current penalty into accruedPenalty storage.
+    ///         Callable by anyone. Useful for recording debt before termination.
     function accruePenalty(uint256 leaseId) external {
         Lease storage lease = leases[leaseId];
         require(lease.active, "Lease not active");
@@ -443,7 +469,7 @@ contract LeaseManager is ERC1155Holder {
         }
     }
 
-    /// @notice FOR DEMO ONLY — backdates the due date to simulate a late payment scenario
+    /// @notice FOR DEMO ONLY — backdates the due date to simulate a late payment scenario.
     function setDueDateForDemo(uint256 leaseId, uint256 newDueDate) external {
         require(leases[leaseId].active,              "Lease not active");
         require(msg.sender == leases[leaseId].owner, "Only owner");
@@ -452,8 +478,9 @@ contract LeaseManager is ERC1155Holder {
 
     // ─── Termination (P1) ────────────────────────────────────────
     /// @notice Owner terminates a lease and deletes the ENS subname.
-    /// @dev Sets subname owner to address(0) via NameWrapper — name stops resolving.
-    ///      Works because fuses=0 was set on creation (parent retains PARENT_CANNOT_CONTROL).
+    /// @dev Sets subname owner to address(0) — name stops resolving everywhere.
+    ///      Works because fuses=0 was set at creation (parent retains PARENT_CANNOT_CONTROL).
+    /// @param reason Human-readable reason, stored in event for audit trail.
     function terminateLease(uint256 leaseId, string calldata reason) external {
         Lease storage lease = leases[leaseId];
         require(lease.active,              "Lease not active");
@@ -464,7 +491,7 @@ contract LeaseManager is ERC1155Holder {
         nameWrapper.setSubnodeOwner(
             lease.parentNode,
             lease.label,
-            address(0), // Delete: owner = zero address
+            address(0),
             0,
             0
         );
@@ -472,23 +499,34 @@ contract LeaseManager is ERC1155Holder {
         emit LeaseTerminated(leaseId, msg.sender, reason);
     }
 
+    // ─── KYC (P2) ────────────────────────────────────────────────
+    /// @notice Backend writes Persona verification to ENS text records.
+    ///         Called by the backend wallet after mock KYC completes.
+    function setPersonaVerified(bytes32 node) external onlyBackend {
+        publicResolver.setText(node, "persona.verified",  "true");
+        publicResolver.setText(node, "persona.timestamp", _uint2str(block.timestamp));
+    }
+
     // ─── View Functions ──────────────────────────────────────────
     function getLease(uint256 leaseId) external view returns (Lease memory) {
         return leases[leaseId];
     }
 
+    /// @notice Total amount currently due: rent + current penalty + accrued penalty.
     function getTotalDue(uint256 leaseId) external view returns (uint256) {
         Lease storage lease = leases[leaseId];
         if (!lease.active) return 0;
         return lease.rentAmount + calculatePenalty(leaseId) + lease.accruedPenalty;
     }
 
+    /// @notice Full on-chain payment audit trail for a lease.
     function getPaymentHistory(uint256 leaseId) external view
         returns (uint256[] memory timestamps, uint256[] memory amounts)
     {
         return (paymentTimestamps[leaseId], paymentAmounts[leaseId]);
     }
 
+    /// @notice All active lease IDs for an owner.
     function getOwnerLeases(address owner) external view returns (uint256[] memory) {
         uint256 count = 0;
         for (uint256 i = 0; i < leaseCount; i++)
@@ -500,6 +538,7 @@ contract LeaseManager is ERC1155Holder {
         return result;
     }
 
+    /// @notice All active lease IDs for a tenant.
     function getTenantLeases(address tenant) external view returns (uint256[] memory) {
         uint256 count = 0;
         for (uint256 i = 0; i < leaseCount; i++)
@@ -544,6 +583,22 @@ contract LeaseManager is ERC1155Holder {
 
 ---
 
+## Known Risks and Mitigations
+
+| Risk | Severity | Mitigation |
+|------|----------|------------|
+| NameWrapper operator approval missing | CRITICAL | Test `isApprovedForAll` before demo. #1 show-stopper. |
+| ERC1155Holder missing from contract | CRITICAL | Already included — do not remove this inheritance |
+| Gas estimation fails on createLease (many ENS calls) | HIGH | Set explicit gas limit of 600,000 on frontend |
+| ENS name registration takes 60+ seconds | HIGH | Do this before the demo, not live |
+| Text record updates fail — contract not owner | HIGH | Option A (contract keeps ownership) prevents this |
+| Owner forgets to approve LeaseManager after onboarding | HIGH | Gate create-lease UI behind `isApprovedForAll` check |
+| viem ENS resolution on Sepolia needs UniversalResolver config | MEDIUM | Configure explicitly in wagmi.ts and ens.ts (see below) |
+| Tenant has no MockUSDC | LOW | "Mint 10,000 USDC" button on /pay page |
+| Subname deletion doesn't clear in ENS Manager UI immediately | LOW | Test on Sepolia before demo |
+
+---
+
 ## Foundry Configuration
 
 ```toml
@@ -573,7 +628,9 @@ Install deps:
 forge install OpenZeppelin/openzeppelin-contracts --no-commit
 ```
 
-### Deploy.s.sol
+---
+
+## Deploy.s.sol
 
 ```solidity
 // SPDX-License-Identifier: MIT
@@ -591,10 +648,13 @@ contract Deploy is Script {
         vm.startBroadcast();
 
         MockUSDC usdc = new MockUSDC();
+
+        // backendWallet = deployer wallet (fills BACKEND_WALLET_PRIVATE_KEY in .env.local)
         LeaseManager leaseManager = new LeaseManager(
             NAME_WRAPPER,
             PUBLIC_RESOLVER,
-            address(usdc)
+            address(usdc),
+            msg.sender   // backendWallet
         );
 
         console.log("MockUSDC deployed at:     ", address(usdc));
@@ -618,12 +678,12 @@ forge script script/Deploy.s.sol \
 
 ## ENS Setup Script
 
-Run this ONCE after deploying contracts. Approves LeaseManager as NameWrapper operator so it can create subnames.
+Run this ONCE after deploying contracts. Approves LeaseManager as NameWrapper operator.
 
-**Prerequisites before running**:
-1. Register your root ENS name at https://app.ens.domains/ on Sepolia (e.g. `residence-epfl.eth`) — costs ~0.003 Sepolia ETH
-2. Names registered on Sepolia are automatically wrapped in the NameWrapper
-3. Get Sepolia ETH: https://sepolia-faucet.pk910.de or https://www.alchemy.com/faucets/ethereum-sepolia
+**Prerequisites**:
+1. Register root ENS name at https://app.ens.domains/ on Sepolia (e.g. `residence-epfl.eth`)
+2. Names on Sepolia are automatically wrapped in NameWrapper
+3. Get Sepolia ETH: https://sepolia-faucet.pk910.de
 
 ```typescript
 // scripts/setup-ens.ts — run with: npx tsx scripts/setup-ens.ts
@@ -631,11 +691,11 @@ import { createPublicClient, createWalletClient, http, namehash } from 'viem';
 import { sepolia } from 'viem/chains';
 import { privateKeyToAccount } from 'viem/accounts';
 
-const PRIVATE_KEY    = process.env.PRIVATE_KEY as `0x${string}`;
-const RPC_URL        = process.env.SEPOLIA_RPC || 'https://rpc.sepolia.org';
-const LEASE_MANAGER  = process.env.LEASE_MANAGER_ADDRESS as `0x${string}`;
-const PARENT_NAME    = process.env.PARENT_ENS_NAME || 'residence-epfl.eth';
-const NAME_WRAPPER   = '0x0635513f179D50A207757E05759CbD106d7dFcE8' as `0x${string}`;
+const PRIVATE_KEY   = process.env.PRIVATE_KEY as `0x${string}`;
+const RPC_URL       = process.env.SEPOLIA_RPC || 'https://rpc.sepolia.org';
+const LEASE_MANAGER = process.env.LEASE_MANAGER_ADDRESS as `0x${string}`;
+const PARENT_NAME   = process.env.PARENT_ENS_NAME || 'residence-epfl.eth';
+const NAME_WRAPPER  = '0x0635513f179D50A207757E05759CbD106d7dFcE8' as `0x${string}`;
 
 const abi = [
   { name: 'setApprovalForAll', type: 'function',
@@ -667,14 +727,16 @@ async function main() {
   });
 
   console.log('\n=== SETUP COMPLETE ===');
-  console.log(`LeaseManager approved: ${approved}`);
-  console.log(`\nCopy this into .env.local as NEXT_PUBLIC_PARENT_NODE:\n${parentNode}`);
+  console.log(`LeaseManager approved as operator: ${approved}`);
+  console.log(`\nCopy into .env.local as NEXT_PUBLIC_PARENT_NODE:\n${parentNode}`);
+  console.log('\nNext: use the Add Owner page in the app to create owner subnames.');
+  console.log('After registerOwner(), the owner wallet must also call setApprovalForAll.');
 }
 
 main().catch(console.error);
 ```
 
-**Important**: After `registerOwner()` transfers ownership of an owner subname to the owner's wallet, that owner MUST also call `nameWrapper.setApprovalForAll(leaseManagerAddress, true)` from their wallet. This is a one-click action in the Owner Onboarding UI (`/onboard/add-owner`).
+**Important**: After `registerOwner()` transfers ownership of the owner subname to the owner's wallet, the owner MUST call `nameWrapper.setApprovalForAll(leaseManagerAddress, true)` from their wallet. Gate lease creation in the UI behind an `isApprovedForAll` check — show a clear "Approve LeaseManager" button if not approved.
 
 ---
 
@@ -728,29 +790,6 @@ export const wagmiConfig = createConfig({
 });
 ```
 
-### lib/contracts.ts
-
-```typescript
-import { type Address } from 'viem';
-
-export const LEASE_MANAGER_ADDRESS = process.env.NEXT_PUBLIC_LEASE_MANAGER_ADDRESS as Address;
-export const MOCK_USDC_ADDRESS     = process.env.NEXT_PUBLIC_MOCK_USDC_ADDRESS as Address;
-export const NAME_WRAPPER_ADDRESS  = '0x0635513f179D50A207757E05759CbD106d7dFcE8' as Address;
-
-// After `forge build`, copy ABIs from contracts/out/LeaseManager.sol/LeaseManager.json
-export const leaseManagerAbi = [] as const; // TODO: fill after forge build
-export const mockUsdcAbi     = [] as const; // TODO: fill after forge build
-
-export const nameWrapperAbi = [
-  { name: 'setApprovalForAll', type: 'function',
-    inputs: [{ name: 'operator', type: 'address' }, { name: 'approved', type: 'bool' }],
-    outputs: [], stateMutability: 'nonpayable' },
-  { name: 'isApprovedForAll', type: 'function',
-    inputs: [{ name: 'account', type: 'address' }, { name: 'operator', type: 'address' }],
-    outputs: [{ name: '', type: 'bool' }], stateMutability: 'view' },
-] as const;
-```
-
 ### lib/ens.ts
 
 ```typescript
@@ -779,15 +818,17 @@ export async function getTextRecord(name: string, key: string) {
 }
 
 export async function getLeaseRecords(name: string) {
-  const [status, tenant, rentAmount, startDate, endDate, personaVerified] = await Promise.all([
-    getTextRecord(name, 'lease.status'),
-    getTextRecord(name, 'lease.tenant'),
-    getTextRecord(name, 'lease.rentAmount'),
-    getTextRecord(name, 'lease.startDate'),
-    getTextRecord(name, 'lease.endDate'),
-    getTextRecord(name, 'persona.verified'),
-  ]);
-  return { status, tenant, rentAmount, startDate, endDate, personaVerified };
+  const [status, tenant, rentAmount, startDate, endDate, lastPaid, personaVerified] =
+    await Promise.all([
+      getTextRecord(name, 'lease.status'),
+      getTextRecord(name, 'lease.tenant'),
+      getTextRecord(name, 'lease.rentAmount'),
+      getTextRecord(name, 'lease.startDate'),
+      getTextRecord(name, 'lease.endDate'),
+      getTextRecord(name, 'lease.lastPaid'),
+      getTextRecord(name, 'persona.verified'),
+    ]);
+  return { status, tenant, rentAmount, startDate, endDate, lastPaid, personaVerified };
 }
 
 export async function subnameExists(name: string): Promise<boolean> {
@@ -805,52 +846,71 @@ export async function subnameExists(name: string): Promise<boolean> {
 ## Key Pages
 
 ### `/` — Landing
-Two buttons: "I'm a Tenant" → `/onboarding` and "I'm an Owner" → `/owner/dashboard`. One sentence product description. Clean, minimal.
+Two buttons: "I'm a Tenant" → `/onboarding` and "I'm an Owner" → `/owner/dashboard`. Hero with the core pitch: "Fake QR code? ENS name doesn't exist. Payment blocked."
 
 ### `/onboarding` — Tenant onboarding
 ```
-Step 1: "Connect with email" via Privy → embedded wallet created, no seed phrase needed
+Step 1: "Connect with email" via Privy → embedded wallet created, no seed phrase
 Step 2: Mock KYC — "Verify Identity" button → 2s fake loading → "Verified ✓"
-Step 3: POST /api/kyc/webhook → backend writes persona.verified=true + timestamp to ENS text record
+Step 3: POST /api/kyc/webhook → backend calls leaseManager.setPersonaVerified(node)
+         → writes persona.verified=true + persona.timestamp to ENS text record
 Step 4: Show tenant their ENS subname + clickable payment link + QR code
 ```
 
 ### `/pay/[ensName]` — Payment page (THE core demo page)
 ```
-1. Resolve ensName via lib/ens.ts → subnameExists()
-2. NOT EXISTS → red "Invalid payment link — no verified lease found for this address" (anti-scam guard)
-3. EXISTS → fetch getLeaseRecords() + call getTotalDue(leaseId) from contract
-4. Display: ENS name, property label, monthly rent, penalty if late, total due, green "Verified Lease" badge
+1. Resolve ensName → subnameExists()
+2. NOT EXISTS → red "Invalid payment link — no verified lease found" (anti-scam guard)
+3. EXISTS → fetch getLeaseRecords() + getTotalDue(leaseId) from contract
+4. Display: ENS name, rent amount, penalty if late, total due, green "Verified Lease" badge
+   Show persona.verified badge if present
 5. "Mint 10,000 USDC" button → MockUSDC.mint(connectedAddress, 10000 * 10^6)
+   [Critical for demo — always show this button so judges can fund the tenant instantly]
 6. "Approve USDC" → mockUsdc.approve(leaseManagerAddress, totalDue)
 7. "Pay Rent" → leaseManager.payRent(leaseId)
-8. Show tx hash + "Payment confirmed" success state
+8. Show tx hash + "Payment confirmed" + next due date
 ```
-Note: finding the leaseId from an ENS name — iterate `getTenantLeases(tenantAddress)` and match `leaseNode` against `namehash(ensName)`.
+Note: to find leaseId from ENS name — call `getTenantLeases(tenantAddress)` and match `leaseNode` against `namehash(ensName)`.
+
+### `/verify` — ENS lease verification (bonus — high demo impact)
+```
+Input any ENS name → resolves it via lib/ens.ts
+Shows: does it resolve? What address? All text records?
+No wallet connection required.
+Proves leases are verifiable by anyone without this frontend.
+Demo line: "Any ENS-aware app can verify this lease. The identity travels with the tenant."
+```
 
 ### `/owner/create-lease` — Create lease
 ```
 Owner connects wallet (MetaMask)
-Inputs: tenant address, apartment label (e.g. "apt1"), monthly rent in USDC, duration in months, penalty rate bps/day (default: 50)
-parentNode is read from NEXT_PUBLIC_PARENT_NODE env — never ask the owner to type it
-"Create Lease" → leaseManager.createLease(parentNode, label, tenant, amount * 10^6, duration, penaltyBps)
+IMPORTANT: Check isApprovedForAll(ownerAddress, leaseManagerAddress) on load.
+  If false → show "Approve LeaseManager" button → nameWrapper.setApprovalForAll(leaseManager, true)
+  If true → show the create lease form
+Form fields: tenant address, apartment label (e.g. "apt1"), monthly rent in USDC,
+  duration in months, penalty rate bps/day (default: 50)
+parentNode read from NEXT_PUBLIC_PARENT_NODE env — never ask owner to type it
+"Create Lease" → leaseManager.createLease(parentNode, label, tenant, amount*10^6, durationMonths, penaltyBps)
+  Set gas limit to 600,000 explicitly
 On success: "Created apt1.dupont.residence-epfl.eth" + link to verify on https://app.ens.domains
 ```
 
 ### `/owner/dashboard` — Owner lease management
 ```
-List all active leases from getOwnerLeases(connectedAddress)
-For each: ENS subname, tenant address, rent amount, next due date, total payments received
-"Simulate Late Payment" → leaseManager.setDueDateForDemo(leaseId, now - 5days) [demo only button]
-"Terminate Lease" → leaseManager.terminateLease(leaseId, "Terminated by owner")
-On termination: show "Lease terminated — ENS subname deleted"
+List all active leases: getOwnerLeases(connectedAddress)
+For each lease: ENS subname, tenant address, rent amount, next due date, payment history count
+  Call getPaymentHistory(leaseId) to show total payments received
+"Simulate Late Payment" → leaseManager.setDueDateForDemo(leaseId, now - 5days) [demo only]
+"Terminate Lease" → prompt for reason → leaseManager.terminateLease(leaseId, reason)
+On termination: "Lease terminated — ENS subname deleted. Name no longer resolves."
 ```
 
 ### `/tenant/dashboard` — Tenant lease view
 ```
 Connect wallet → getTenantLeases(address) → show lease cards
-Each card: ENS subname, rent amount, next due date, payment history count
-"Pay Rent" button → links to /pay/[ensName]
+Each card: ENS subname, rent amount, next due date, penalty if late, persona.verified badge
+  Show payment history count from getPaymentHistory(leaseId)
+"Pay Rent" link → /pay/[ensName]
 "Mint Test USDC" button for demo convenience
 ```
 
@@ -859,11 +919,11 @@ Each card: ENS subname, rent amount, next due date, payment history count
 PM connects wallet
 Input: owner wallet address, owner label (e.g. "dupont")
 "Add Owner" → leaseManager.registerOwner(parentNode, label, ownerAddress)
-On success: "Created dupont.residence-epfl.eth resolving to [address]"
-Banner shown: "The owner must now approve the LeaseManager"
-Owner connects wallet on same page → "Approve LeaseManager" button
+On success: "Created dupont.residence-epfl.eth → resolves to [address]"
+Banner: "The owner must now approve the LeaseManager from their wallet"
+Owner connects wallet → check isApprovedForAll → "Approve LeaseManager" button
   → nameWrapper.setApprovalForAll(leaseManagerAddress, true)
-After approval: owner can create leases
+After approval: "Owner is ready to create leases"
 ```
 
 ---
@@ -874,26 +934,14 @@ After approval: owner can create leases
 ```typescript
 // Body: { walletAddress: string, ensName: string }
 // Returns: { sessionId: string }
-// Just generates a UUID — no external call, fully mocked
+// Fully mocked — just generates a UUID
 ```
 
 ### POST `/api/kyc/webhook`
 ```typescript
 // Body: { sessionId: string, ensName: string }
-// Action: write persona.verified=true to ENS text records
-//
-// Implementation note: The backend wallet needs to be able to call
-// publicResolver.setText() on the lease subname.
-// Since the LeaseManager contract owns the subname, add this function to LeaseManager:
-//
-//   function setPersonaVerified(bytes32 node) external onlyBackend {
-//     publicResolver.setText(node, "persona.verified", "true");
-//     publicResolver.setText(node, "persona.timestamp", _uint2str(block.timestamp));
-//   }
-//
-// Where onlyBackend checks msg.sender == backendWallet (set in constructor).
-// The backend calls this via viem using BACKEND_WALLET_PRIVATE_KEY.
-//
+// Action: calls leaseManager.setPersonaVerified(namehash(ensName))
+// Uses BACKEND_WALLET_PRIVATE_KEY from env to sign the tx
 // Returns: { success: true, txHash: string }
 ```
 
@@ -903,8 +951,32 @@ After approval: owner can create leases
 // URL: `${NEXT_PUBLIC_APP_URL}/pay/${ensName}`
 // Uses: qrcode npm package — QRCode.toBuffer(url, { type: 'png' })
 // Returns: Response with Content-Type: image/png
-// Used by: QRCode.tsx via <img src="/api/qr/apt1.dupont.residence-epfl.eth" />
 ```
+
+---
+
+## ENS Text Record Reference
+
+**On owner subnames** (e.g., `dupont.residence-epfl.eth`):
+
+| Key | Value | Set by |
+|-----|-------|--------|
+| `role` | `"owner"` | Contract on `registerOwner()` |
+| `owner.address` | `"0xabc..."` | Contract on `registerOwner()` |
+
+**On lease subnames** (e.g., `apt1.dupont.residence-epfl.eth`):
+
+| Key | Value | Set by |
+|-----|-------|--------|
+| `lease.rentAmount` | `"1500000000"` | Contract on creation |
+| `lease.token` | `"USDC"` | Contract on creation |
+| `lease.startDate` | unix timestamp string | Contract on creation |
+| `lease.endDate` | unix timestamp string | Contract on creation |
+| `lease.status` | `"active"` / `"terminated"` | Contract on creation |
+| `lease.tenant` | `"0xabc..."` | Contract on creation |
+| `lease.lastPaid` | unix timestamp string | Contract on `payRent()` |
+| `persona.verified` | `"true"` | Contract on `setPersonaVerified()` |
+| `persona.timestamp` | unix timestamp string | Contract on `setPersonaVerified()` |
 
 ---
 
@@ -933,48 +1005,48 @@ BACKEND_WALLET_PRIVATE_KEY=0x...       # wallet that calls setPersonaVerified()
 
 ---
 
-## Build Order — 2 People, ~16 Hours
+## Build Order
 
-### Phase 1 — Contracts [Hours 0–5] — Person A
+### Phase 1 — Contracts [Hours 0–5]
 ```
 [0–0.5h] Foundry init, install OpenZeppelin, set up remappings
 [0.5–3h] MockUSDC + interfaces + LeaseManager.sol (use code above verbatim)
-[3–4h]   LeaseManager.t.sol — test createLease, payRent, calculatePenalty, terminateLease
-[4–5h]   Deploy to Sepolia → run setup-ens.ts → fill .env files → share addresses with Person B
+[3–4h]   LeaseManager.t.sol — test createLease, payRent, calculatePenalty,
+          accruePenalty, terminateLease, getPaymentHistory
+[4–5h]   Deploy to Sepolia → run setup-ens.ts → verify isApprovedForAll=true
+          → fill .env files
 ```
 
-### Phase 2 — Scaffold + /pay page [Hours 0–5] — Person B (parallel)
+### Phase 2 — Scaffold + /pay page [Hours 0–5] (parallel)
 ```
 [0–1h]   Next.js scaffold, Privy setup, wagmi config, Tailwind
-[1–2h]   lib/ens.ts + lib/wagmi.ts (ABIs can be stubbed until Person A compiles)
-[2–5h]   /pay/[ensName] — full flow: resolve ENS, anti-scam guard, show amount,
-          approve USDC, payRent, success state
-          hooks/usePayRent.ts — approve + payRent two-step sequence
+[1–2h]   lib/ens.ts + lib/wagmi.ts + lib/contracts.ts
+[2–5h]   /pay/[ensName] — full flow including Mint USDC button
+          hooks/usePayRent.ts — approve + payRent two-step
 ```
 
 ### Phase 3 — Remaining pages [Hours 5–12]
 ```
-[5–7h]   Person A: /owner/create-lease + /owner/dashboard (terminate + setDueDateForDemo)
-[5–7h]   Person B: /onboarding (Privy login + mock KYC + ENS text record write)
-                   POST /api/kyc/webhook + GET /api/qr/[ensName]
-[7–9h]   Person A: /tenant/dashboard
-[7–9h]   Person B: /onboard/add-owner (P2 — registerOwner + owner approval flow)
-[9–10h]  Both: integrate, test full flow end-to-end on Sepolia
+[5–7h]   /owner/create-lease (with isApprovedForAll gate) + /owner/dashboard
+          (terminate with reason + setDueDateForDemo + payment history)
+[5–7h]   /onboarding + POST /api/kyc/webhook + GET /api/qr/[ensName]
+[7–9h]   /tenant/dashboard (with payment history)
+[7–9h]   /onboard/add-owner + /verify page
+[9–10h]  Integrate, test full flow end-to-end on Sepolia
 ```
 
 ### Checkpoint [Hour 10]
-> Do these three things work on Sepolia?
-> 1. createLease → ENS subname exists with text records
-> 2. payRent → MockUSDC transfers, due date advances
+> 1. createLease → ENS subname exists with all text records
+> 2. payRent → MockUSDC transfers, payment recorded on-chain, due date advances
 > 3. /pay/fake-name → "Invalid payment link" shown
 >
-> If NO → all hands fixing these. Drop P2 (add-owner UI), use cast commands instead.
+> If NO → all hands fixing these. Drop P2, use cast commands.
 > If YES → proceed to Phase 4.
 
-### Phase 4 — Polish + Pitch Prep [Hours 10–16]
+### Phase 4 — Polish + Pitch [Hours 10–16]
 ```
-[10–12h] Landing page, consistent Tailwind styling across all pages
-[12–13h] Rehearse demo (see script below) — identify rough edges
+[10–12h] Landing page, consistent Tailwind styling, /verify page polish
+[12–13h] Rehearse demo — identify rough edges
 [13–14h] Fix bugs from rehearsal
 [14–16h] Pitch slides + practice 5-minute presentation
 ```
@@ -983,7 +1055,7 @@ BACKEND_WALLET_PRIVATE_KEY=0x...       # wallet that calls setPersonaVerified()
 | Hour | If behind | Drop |
 |---|---|---|
 | 5 | Contracts not on Sepolia | Person A keeps going, Person B mocks contract calls |
-| 10 | P0 not working | All hands on P0, skip add-owner UI entirely |
+| 10 | P0 not working | All hands on P0, skip /verify and add-owner UI entirely |
 | 12 | Behind on polish | Drop tenant dashboard, tenant goes straight to /pay/[ensName] |
 
 ### Never drop
@@ -996,65 +1068,80 @@ BACKEND_WALLET_PRIVATE_KEY=0x...       # wallet that calls setPersonaVerified()
 
 ## Demo Script (5 minutes)
 
-Rehearse until it takes exactly 4 minutes. Leave 1 minute buffer.
-
 **[0:00–0:30] The problem**
-"Every month, student residencies send a QR code for rent. Scammers send identical-looking fakes. Students lose money with no recourse. We fix this."
+"Every month, student residencies send a QR code for rent. Scammers send identical-looking fakes. Students lose money. We fix this."
 
 **[0:30–1:00] The anti-scam guarantee**
 Navigate to `/pay/scam.dupont.residence-epfl.eth`
-→ Red: "Invalid payment link — no verified lease found for this address"
-"A fake QR code resolves to an ENS name with no lease contract. Blocked before any money moves. No trust required — it's on-chain."
+→ Red: "Invalid payment link — no verified lease found"
+"Fake QR resolves to an ENS name with no lease. Blocked before any money moves."
 
 **[1:00–2:00] Tenant onboarding**
 Navigate to `/onboarding`
-→ "Connect with email" → Privy wallet created, no seed phrase
-→ "Verify Identity" → verified ✓ → persona.verified written to ENS
-→ Show `apt1.dupont.residence-epfl.eth` — "this IS their lease"
-→ Show QR code: "this is what the residence emails them each month"
+→ Connect with email → Privy wallet, no seed phrase
+→ "Verify Identity" → persona.verified written to ENS
+→ Show `apt1.dupont.residence-epfl.eth` and QR code
 
 **[2:00–3:30] Payment flow**
 Navigate to `/pay/apt1.dupont.residence-epfl.eth`
 → Green "Verified Lease" badge, 1500 USDC due
 → "Mint USDC" → "Approve" → "Pay Rent" → tx confirmed
 → Show tx on https://sepolia.etherscan.io
+→ Payment recorded on-chain: call getPaymentHistory(0) to show audit trail
 
 **[3:30–4:00] Lease termination**
 Navigate to `/owner/dashboard`
 → "Simulate Late Payment" → penalty shown on /pay page
-→ "Terminate Lease" → tx confirmed
-→ Navigate back to `/pay/apt1.dupont.residence-epfl.eth` → now "Invalid payment link"
-"The ENS subname was deleted on-chain. The lease is verifiably over."
+→ "Terminate Lease" (reason: "Demo termination") → tx confirmed
+→ Back to `/pay/apt1.dupont.residence-epfl.eth` → "Invalid payment link"
+"ENS subname deleted on-chain. Lease verifiably over."
 
-**[4:00–5:00] Identity layer**
-Open https://app.ens.domains on Sepolia → search `apt1.dupont.residence-epfl.eth`
-→ Shows all text records: lease terms, persona.verified=true
-"Any ENS-aware app can verify this lease without our frontend. The identity travels with the tenant."
-
----
-
-## What to Mock vs What Must Work Live
-
-### Must work live on Sepolia
-- ENS subname creation on `createLease()` with text records set
-- `apt1.dupont.residence-epfl.eth` resolves to tenant address in frontend
-- MockUSDC transfer from tenant to owner on `payRent()`
-- Penalty calculation showing correct late amount
-- ENS subname deletion on `terminateLease()` — name stops resolving
-- `/pay/[ensName]` anti-scam rejection for non-existent names
-
-### Can be mocked / simplified
-- Persona KYC — fake flow, but ENS text record write is real
-- PM onboarding UI — keep as setup script, explain verbally to judges
-- Payment scheduling — show current state only, no cron jobs
-- Mobile responsive design — demo on laptop
-- Multi-month penalty accrual — demo one month, explain the pattern
+**[4:00–5:00] Identity layer + pitch**
+Navigate to `/verify` → input `apt1.dupont.residence-epfl.eth`
+→ All text records visible: lease terms, persona.verified=true
+"Any ENS-aware app can verify this lease without our frontend."
+"The same payment rails work identically for security deposits — we designed the struct to support this extension."
 
 ---
 
-## Quick Reference
+## Cast Command Fallbacks (if frontend breaks during demo)
 
-### Namehashes (compute once, hardcode in .env)
+```bash
+# Check NameWrapper approval
+cast call 0x0635513f179D50A207757E05759CbD106d7dFcE8 \
+  "isApprovedForAll(address,address)(bool)" \
+  $PM_ADDRESS $LEASE_MANAGER_ADDRESS --rpc-url $SEPOLIA_RPC
+
+# Read text record
+cast call 0x8FADE66B79cC9f707aB26799354482EB93a5B7dD \
+  "text(bytes32,string)(string)" \
+  $LEASE_NODE "lease.status" --rpc-url $SEPOLIA_RPC
+
+# Get total due
+cast call $LEASE_MANAGER_ADDRESS \
+  "getTotalDue(uint256)(uint256)" 0 --rpc-url $SEPOLIA_RPC
+
+# Get payment history
+cast call $LEASE_MANAGER_ADDRESS \
+  "getPaymentHistory(uint256)(uint256[],uint256[])" 0 --rpc-url $SEPOLIA_RPC
+
+# Register owner (fallback if UI broken)
+cast send $LEASE_MANAGER_ADDRESS \
+  "registerOwner(bytes32,string,address)" \
+  $PARENT_NODE "dupont" $OWNER_ADDRESS \
+  --rpc-url $SEPOLIA_RPC --private-key $PRIVATE_KEY
+
+# Owner approves LeaseManager (fallback)
+cast send 0x0635513f179D50A207757E05759CbD106d7dFcE8 \
+  "setApprovalForAll(address,bool)" \
+  $LEASE_MANAGER_ADDRESS true \
+  --rpc-url $SEPOLIA_RPC --private-key $OWNER_PRIVATE_KEY
+```
+
+---
+
+## Quick Reference — Namehashes
+
 ```typescript
 import { namehash } from 'viem/ens';
 
@@ -1063,45 +1150,8 @@ namehash('dupont.residence-epfl.eth')       // owner node
 namehash('apt1.dupont.residence-epfl.eth')  // lease node
 ```
 
-### ENS function signatures
-```
-NameWrapper:
-  setSubnodeRecord(bytes32 parentNode, string label, address owner, address resolver,
-                   uint64 ttl, uint32 fuses, uint64 expiry) → bytes32
-  setSubnodeOwner(bytes32 parentNode, string label, address newOwner,
-                  uint32 fuses, uint64 expiry) → bytes32
-  setApprovalForAll(address operator, bool approved)
-  isApprovedForAll(address account, address operator) → bool
-
-PublicResolver:
-  setText(bytes32 node, string key, string value)
-  text(bytes32 node, string key) → string
-  setAddr(bytes32 node, address addr)
-  addr(bytes32 node) → address
-```
-
-### Cast command fallbacks (if frontend breaks during demo)
-```bash
-# Check NameWrapper approval
-cast call 0x0635513f179D50A207757E05759CbD106d7dFcE8 \
-  "isApprovedForAll(address,address)(bool)" \
-  $PM_ADDRESS $LEASE_MANAGER_ADDRESS \
-  --rpc-url $SEPOLIA_RPC
-
-# Read text record
-cast call 0x8FADE66B79cC9f707aB26799354482EB93a5B7dD \
-  "text(bytes32,string)(string)" \
-  $LEASE_NODE "lease.status" \
-  --rpc-url $SEPOLIA_RPC
-
-# Get total due
-cast call $LEASE_MANAGER_ADDRESS \
-  "getTotalDue(uint256)(uint256)" \
-  0 --rpc-url $SEPOLIA_RPC
-```
-
-### Useful links
-- ENS Manager App (Sepolia): https://app.ens.domains (switch network to Sepolia)
+## Useful Links
+- ENS Manager App (Sepolia): https://app.ens.domains (switch to Sepolia)
 - Sepolia ETH faucet: https://sepolia-faucet.pk910.de
 - Alchemy faucet: https://www.alchemy.com/faucets/ethereum-sepolia
 - Sepolia Etherscan: https://sepolia.etherscan.io

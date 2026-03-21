@@ -115,6 +115,14 @@ export default function OwnerDashboardPage() {
           </a>
         </div>
 
+        {/* QR Code Tip */}
+        <div className="bg-blue-50 border border-blue-200 rounded-xl p-3 mb-4 flex items-start gap-2">
+          <span className="text-blue-600 text-sm mt-0.5">&#x1F6E1;</span>
+          <p className="text-xs text-blue-700">
+            Each lease has a unique payment QR code. Share it with your tenants &mdash; fake QR codes are automatically blocked by ENS verification.
+          </p>
+        </div>
+
         {/* Lease Cards */}
         {ownerLeaseIds && ownerLeaseIds.length > 0 ? (
           <div className="space-y-4">
@@ -141,6 +149,11 @@ export default function OwnerDashboardPage() {
             </a>
           </div>
         )}
+
+        {/* Nav */}
+        <div className="mt-8 text-center">
+          <a href="/" className="text-sm text-gray-400 hover:text-gray-600">&larr; Back to Home</a>
+        </div>
       </div>
     </div>
   );
@@ -268,6 +281,26 @@ function LeaseCard({
         </div>
       </div>
 
+      {/* Payment & QR links */}
+      {lease.active && (
+        <div className="flex gap-3 mb-3">
+          <a
+            href={`/pay/${ensSubname}`}
+            className="flex-1 bg-blue-600 hover:bg-blue-700 text-white font-medium py-2 px-3 rounded-xl transition-colors text-sm text-center"
+          >
+            Payment Link
+          </a>
+          <a
+            href={`/api/qr/${ensSubname}`}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="flex-1 border border-blue-600 text-blue-600 hover:bg-blue-50 font-medium py-2 px-3 rounded-xl transition-colors text-sm text-center"
+          >
+            QR Code
+          </a>
+        </div>
+      )}
+
       {/* Action Buttons */}
       {lease.active && (
         <div className="flex gap-3">
@@ -276,14 +309,14 @@ function LeaseCard({
             disabled={isPending && isActioning}
             className="flex-1 bg-amber-500 hover:bg-amber-600 disabled:bg-gray-300 text-white font-medium py-2 px-3 rounded-xl transition-colors text-sm"
           >
-            {isActioning && actionType === 'simulate' ? 'Setting...' : 'Simulate Late Payment'}
+            {isActioning && actionType === 'simulate' ? 'Setting...' : 'Simulate Late'}
           </button>
           <button
             onClick={() => onTerminate(leaseId)}
             disabled={isPending && isActioning}
             className="flex-1 bg-red-500 hover:bg-red-600 disabled:bg-gray-300 text-white font-medium py-2 px-3 rounded-xl transition-colors text-sm"
           >
-            {isActioning && actionType === 'terminate' ? 'Terminating...' : 'Terminate Lease'}
+            {isActioning && actionType === 'terminate' ? 'Terminating...' : 'Terminate'}
           </button>
         </div>
       )}

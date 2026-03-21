@@ -122,6 +122,11 @@ export default function TenantDashboardPage() {
             <p className="text-xs text-gray-400">Ask your property owner to create a lease for your address.</p>
           </div>
         )}
+
+        {/* Nav */}
+        <div className="mt-8 text-center">
+          <a href="/" className="text-sm text-gray-400 hover:text-gray-600">&larr; Back to Home</a>
+        </div>
       </div>
     </div>
   );
