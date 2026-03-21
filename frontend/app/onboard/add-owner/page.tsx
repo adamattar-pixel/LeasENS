@@ -3,6 +3,7 @@
 import { useState, useEffect } from 'react';
 import { usePrivy } from '@privy-io/react-auth';
 import { useAccount, useReadContract, useWriteContract, useWaitForTransactionReceipt } from 'wagmi';
+import { namehash } from 'viem';
 import {
   LEASE_MANAGER_ADDRESS,
   NAME_WRAPPER_ADDRESS,
@@ -288,6 +289,13 @@ export default function AddOwnerPage() {
               <p className="font-mono text-blue-600 font-semibold">{createdName}</p>
               <p className="text-xs text-gray-400">
                 Resolves to: {ownerAddress.slice(0, 10)}...{ownerAddress.slice(-6)}
+              </p>
+              <p className="text-xs text-gray-500 mt-1">Owner Node</p>
+              <p className="font-mono text-xs text-gray-400 break-all">
+                {namehash(createdName)}
+              </p>
+              <p className="text-xs text-gray-400 mt-1">
+                Lease subnames will be created under this owner (e.g. apt1.{label}.{parentEnsName})
               </p>
               {registerTxHash && (
                 <p className="text-xs text-gray-400">

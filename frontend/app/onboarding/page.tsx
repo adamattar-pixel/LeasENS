@@ -39,6 +39,16 @@ export default function OnboardingPage() {
     }
   }, [privyReady, authenticated, isConnected, step]);
 
+  // Read owner label for three-tier name composition
+  const leaseParentNode = leaseData ? (leaseData as { parentNode: string }).parentNode : undefined;
+  const { data: ownerLabel } = useReadContract({
+    address: LEASE_MANAGER_ADDRESS,
+    abi: leaseManagerAbi,
+    functionName: 'ownerLabels',
+    args: leaseParentNode ? [leaseParentNode as `0x${string}`] : undefined,
+    query: { enabled: !!leaseParentNode },
+  });
+
   // Resolve ENS subname from lease data
   useEffect(() => {
     if (leaseData) {
@@ -51,32 +61,51 @@ export default function OnboardingPage() {
         active: boolean;
       };
       if (lease.active && lease.label) {
-        // Build ENS name from label + parent ENS name
         const parentName = process.env.NEXT_PUBLIC_PARENT_ENS_NAME || 'residence-epfl.eth';
-        // The lease label is e.g. "apt1" under an owner subname
-        // For simplicity, use the label directly
-        setEnsSubname(`${lease.label}.${parentName}`);
+        if (ownerLabel) {
+          setEnsSubname(`${lease.label}.${ownerLabel}.${parentName}`);
+        } else {
+          setEnsSubname(`${lease.label}.${parentName}`);
+        }
       }
     }
-  }, [leaseData]);
+  }, [leaseData, ownerLabel]);
+
+  const [kycError, setKycError] = useState<string | null>(null);
 
   async function handleVerifyIdentity() {
+    if (!ensSubname || !address) return;
     setStep('verifying');
-    // Mock KYC: 2 second fake loading + webhook call, then verified
+    setKycError(null);
+
     try {
-      if (ensSubname) {
-        await fetch('/api/kyc/webhook', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ ensName: ensSubname }),
-        });
+      // Step 1: Initiate KYC session
+      const initiateRes = await fetch('/api/kyc/initiate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ walletAddress: address, ensName: ensSubname }),
+      });
+      const initiateData = await initiateRes.json();
+      if (!initiateRes.ok || !initiateData.sessionId) {
+        throw new Error(initiateData.error || 'Failed to initiate KYC');
       }
-    } catch {
-      // Webhook is best-effort; verification continues regardless
-    }
-    setTimeout(() => {
+
+      // Step 2: Call webhook with sessionId
+      const webhookRes = await fetch('/api/kyc/webhook', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sessionId: initiateData.sessionId, ensName: ensSubname }),
+      });
+      const webhookData = await webhookRes.json();
+      if (!webhookRes.ok || !webhookData.success) {
+        throw new Error(webhookData.error || 'Verification transaction failed');
+      }
+
       setStep('verified');
-    }, 2000);
+    } catch (e) {
+      setKycError(e instanceof Error ? e.message : 'Verification failed');
+      setStep('kyc');
+    }
   }
 
   const paymentLink = ensSubname
@@ -147,11 +176,17 @@ export default function OnboardingPage() {
               </p>
             )}
 
+            {kycError && (
+              <div className="bg-red-50 border border-red-200 rounded-xl p-3 mb-4">
+                <p className="text-sm text-red-700">{kycError}</p>
+              </div>
+            )}
+
             <button
               onClick={handleVerifyIdentity}
               className="w-full bg-blue-600 hover:bg-blue-700 text-white font-semibold py-3 px-4 rounded-xl transition-colors"
             >
-              Verify Identity
+              {kycError ? 'Retry Verification' : 'Verify Identity'}
             </button>
           </div>
         )}

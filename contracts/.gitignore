@@ -3,6 +3,9 @@ out/
 cache/
 lib/
 
-# Local secrets
+# Environment & secrets
 .env
 !.env.example
+
+# Deployment artifacts
+broadcast/

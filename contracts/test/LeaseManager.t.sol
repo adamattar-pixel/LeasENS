@@ -194,6 +194,12 @@ contract LeaseManagerTest is Test {
         leaseManager.registerOwner(PARENT_NODE, "dupont", owner1);
     }
 
+    function test_registerOwner_setsOwnerLabel() public {
+        vm.prank(pm);
+        bytes32 ownerNode = leaseManager.registerOwner(PARENT_NODE, "dupont", owner1);
+        assertEq(leaseManager.ownerLabels(ownerNode), "dupont");
+    }
+
     function test_registerOwner_revertsZeroAddress() public {
         vm.prank(pm);
         vm.expectRevert("Invalid owner");
@@ -414,6 +420,26 @@ contract LeaseManagerTest is Test {
 
         (,uint256[] memory amounts) = leaseManager.getPaymentHistory(leaseId);
         assertEq(amounts[0], totalDue);
+    }
+
+    function test_payRent_withPenalty_emitsCorrectEvent() public {
+        uint256 leaseId = _createStandardLease();
+
+        // Warp 5 days past due date
+        vm.warp(block.timestamp + 30 days + 5 days);
+
+        uint256 expectedPenalty = (RENT_AMOUNT * PENALTY_BPS * 5) / 10000;
+        uint256 totalDue = RENT_AMOUNT + expectedPenalty;
+        _fundAndApproveTenant(tenant1, totalDue);
+
+        LeaseManager.Lease memory leaseBefore = leaseManager.getLease(leaseId);
+        uint256 expectedNextDue = leaseBefore.nextDueDate + 30 days;
+
+        vm.expectEmit(true, true, false, true);
+        emit RentPaid(leaseId, tenant1, RENT_AMOUNT, expectedPenalty, expectedNextDue);
+
+        vm.prank(tenant1);
+        leaseManager.payRent(leaseId);
     }
 
     function test_payRent_withAccruedPenalty() public {

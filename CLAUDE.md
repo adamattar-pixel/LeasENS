@@ -889,8 +889,8 @@ IMPORTANT: Check isApprovedForAll(ownerAddress, leaseManagerAddress) on load.
   If true → show the create lease form
 Form fields: tenant address, apartment label (e.g. "apt1"), monthly rent in USDC,
   duration in months, penalty rate bps/day (default: 50)
-parentNode read from NEXT_PUBLIC_PARENT_NODE env — never ask owner to type it
-"Create Lease" → leaseManager.createLease(parentNode, label, tenant, amount*10^6, durationMonths, penaltyBps)
+Owner enters their ENS label (e.g. "dupont"), parentNode computed as namehash(ownerLabel + '.' + PARENT_ENS_NAME)
+"Create Lease" → leaseManager.createLease(ownerNode, label, tenant, amount*10^6, durationMonths, penaltyBps)
   Set gas limit to 600,000 explicitly
 On success: "Created apt1.dupont.residence-epfl.eth" + link to verify on https://app.ens.domains
 ```

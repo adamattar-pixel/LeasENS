@@ -12,13 +12,18 @@ import { sepolia } from 'viem/chains';
 import { privateKeyToAccount } from 'viem/accounts';
 import { normalize } from 'viem/ens';
 
-const RPC = 'https://eth-sepolia.g.alchemy.com/v2/Ho7wuM-4K8QT_b3HRW51d';
-const LEASE_MANAGER = '0xcAe2921209F419C45fD9cfdbE73e68bA91Ec9962';
-const MOCK_USDC = '0x6890741124d46B9Bb3f7e90fb65CfB79356dCfcb';
-const NAME_WRAPPER = '0x0635513f179D50A207757E05759CbD106d7dFcE8';
-const PUBLIC_RESOLVER = '0x8FADE66B79cC9f707aB26799354482EB93a5B7dD';
-const UNIVERSAL_RESOLVER = '0xBaBC7678D7A63104f1658c11D6AE9A21cdA09725';
-const PK = '0x9c7733bebc9daeb5e973635e8ed5f5653754f22e268271be2840222dda951000';
+if (!process.env.PRIVATE_KEY) throw new Error('Set PRIVATE_KEY env var');
+if (!process.env.SEPOLIA_RPC) throw new Error('Set SEPOLIA_RPC env var');
+if (!process.env.LEASE_MANAGER_ADDRESS) throw new Error('Set LEASE_MANAGER_ADDRESS env var');
+if (!process.env.MOCK_USDC_ADDRESS) throw new Error('Set MOCK_USDC_ADDRESS env var');
+
+const RPC = process.env.SEPOLIA_RPC;
+const LEASE_MANAGER = process.env.LEASE_MANAGER_ADDRESS;
+const MOCK_USDC = process.env.MOCK_USDC_ADDRESS;
+const NAME_WRAPPER = process.env.NAME_WRAPPER_ADDRESS || '0x0635513f179D50A207757E05759CbD106d7dFcE8';
+const PUBLIC_RESOLVER = process.env.PUBLIC_RESOLVER_ADDRESS || '0x8FADE66B79cC9f707aB26799354482EB93a5B7dD';
+const UNIVERSAL_RESOLVER = process.env.UNIVERSAL_RESOLVER_ADDRESS || '0xBaBC7678D7A63104f1658c11D6AE9A21cdA09725';
+const PK = process.env.PRIVATE_KEY;
 
 const account = privateKeyToAccount(PK);
 
