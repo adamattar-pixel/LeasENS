@@ -1,229 +1,143 @@
-# Architecture Compliance Audit Against `CLAUDE.md` (Strict Parity)
+# Architecture Compliance Audit Against `CLAUDE.md`
 
-## 1. Scope and Method
+> **Audited:** 2026-03-21 — current `main` working tree.
+> **Source of truth:** `CLAUDE.md` only.
+> **Scope:** `contracts/`, `frontend/`, `scripts/`, top-level docs.
+> **Excluded:** `.next`, `node_modules`, `contracts/lib`, `contracts/out`, `contracts/cache`.
 
-- Baseline audited: current local `main` working tree.
-- Source of truth: `CLAUDE.md` only.
-- Audit scope: `contracts/`, `frontend/`, `scripts/`, and top-level docs.
-- Excluded as architecture sources: generated/vendor artifacts (`.next`, `node_modules`, `contracts/lib`, `contracts/out`, `contracts/cache`).
-
-Method used:
-1. Extract binding requirements from `CLAUDE.md` with line anchors.
-2. Reconstruct implemented architecture from source files and route entry points.
-3. Compare requirement-by-requirement and classify divergences.
-4. Produce concrete remediation with exact file/module targets.
+> **Note:** The previous version of this file (score 6.3/10) was written before hooks, components, and lib files were built. It incorrectly listed WalletConnect, PaymentCard, LeaseCard, KYCFlow, QRCode, usePayRent, useENSProfile, and lib/privy.ts as "missing". All of those now exist. This version supersedes it.
 
 ---
 
-## 2. Target Architecture Extracted from `CLAUDE.md`
+## 1. Target Architecture (from CLAUDE.md)
 
-## 2.1 System design and boundaries
-
-- Monorepo with `contracts` + `frontend`; backend logic lives only in Next API routes (`CLAUDE.md:41`, `CLAUDE.md:104-159`).
-- Single lifecycle contract (`LeaseManager.sol`) handling owner onboarding, lease creation, rent payment, penalties, termination, and KYC text writes (`CLAUDE.md:30`, `CLAUDE.md:236-238`).
-- Subname ownership Option A: contract retains lease subname ownership to update ENS text records (`CLAUDE.md:31`, `CLAUDE.md:238`).
-- Security guarantee: fake ENS payment links must be blocked by on-chain resolution + lease validity checks (`CLAUDE.md:11-13`).
-
-## 2.2 Role model and wallet strategy
-
-- Tenant wallet: Privy embedded/email (`CLAUDE.md:32`, `CLAUDE.md:851-857`).
-- Owner/PM wallet: MetaMask/injected EOA (`CLAUDE.md:33`, `CLAUDE.md:886`, `CLAUDE.md:919`).
-
-## 2.3 Required repository structure
-
-- Explicit required files/modules under `frontend/components`, `frontend/hooks`, and `frontend/lib`:
-  - `WalletConnect.tsx`, `PaymentCard.tsx`, `LeaseCard.tsx`, `KYCFlow.tsx`, `QRCode.tsx`, `TransactionStatus.tsx`
-  - `useLease.ts`, `usePayRent.ts`, `useENSProfile.ts`
-  - `ens.ts`, `contracts.ts`, `wagmi.ts`, `privy.ts`
-  (`CLAUDE.md:139-154`).
-
-## 2.4 Core flow requirements
-
-- `/pay/[ensName]` must:
-  - block invalid ENS links,
-  - fetch ENS records + `getTotalDue(leaseId)`,
-  - show verified lease status,
-  - always expose mint button for demo,
-  - resolve `leaseId` by matching `leaseNode == namehash(ensName)` from tenant leases (`CLAUDE.md:860-873`).
-- `/owner/create-lease` must gate by `isApprovedForAll` and set gas to `600000` (`CLAUDE.md:887-895`).
-- `/owner/dashboard` and `/tenant/dashboard` must display payment history counts; tenant card must include `persona.verified` badge (`CLAUDE.md:900-914`).
-- `/verify` must require no wallet and expose lease verification from ENS (`CLAUDE.md:875-881`).
-- `/onboarding` must initiate mock KYC then call webhook to trigger `setPersonaVerified` (`CLAUDE.md:851-857`).
-
-## 2.5 Must-do constraints
-
-- `LeaseManager` must inherit `ERC1155Holder` (`CLAUDE.md:240`, `CLAUDE.md:591`).
-- Create-lease UI must use explicit gas limit `600,000` (`CLAUDE.md:371`, `CLAUDE.md:592`, `CLAUDE.md:894`).
-- Owner flow must gate on NameWrapper operator approval (`CLAUDE.md:739`, `CLAUDE.md:887-889`, `CLAUDE.md:923-925`).
-- ENS Universal Resolver override must be configured in `wagmi.ts` and `ens.ts` (`CLAUDE.md:596`, `CLAUDE.md:773-810`).
+- Monorepo: `contracts/` + `frontend/`; backend logic in Next.js API routes only.
+- Single lifecycle contract `LeaseManager.sol`: owner onboarding, lease creation, rent payment, penalty, termination, KYC text writes.
+- Subname ownership Option A: contract retains lease subname permanently to update ENS text records.
+- Security guarantee: fake ENS payment links blocked by on-chain resolution + lease validity check.
+- Three-tier naming: `apt1.dupont.residence-epfl.eth` (tenant.owner.parent).
+- Tenant wallet: Privy embedded/email. Owner/PM wallet: MetaMask/injected EOA.
 
 ---
 
-## 3. Implemented Architecture Snapshot (Current Code)
+## 2. Required Module Inventory — Current Status
 
-## 3.1 Contracts
-
-- `LeaseManager` is a single lifecycle contract and inherits `ERC1155Holder` (`contracts/src/LeaseManager.sol:9`).
-- Constructor includes backend wallet; `setPersonaVerified` is restricted by `onlyBackend` (`contracts/src/LeaseManager.sol:15`, `contracts/src/LeaseManager.sol:58-69`, `contracts/src/LeaseManager.sol:257-260`).
-- Additional state not in spec skeleton: `ownerLabels` mapping (`contracts/src/LeaseManager.sol:40`, `contracts/src/LeaseManager.sol:96`).
-- Create lease, pay, penalty, terminate, history, owner/tenant lease indexes are implemented (`contracts/src/LeaseManager.sol:106-300`).
-
-## 3.2 Frontend routes
-
-- Required routes exist: `/`, `/onboarding`, `/onboard/add-owner`, `/owner/*`, `/tenant/dashboard`, `/pay/[ensName]`, `/verify`.
-- `/pay/[ensName]` validates ENS, resolves leaseId via `findLeaseIdByEnsName`, supports mint+approve+pay flow (`frontend/app/pay/[ensName]/page.tsx:129-163`, `frontend/lib/ens.ts:50-79`, `frontend/app/pay/[ensName]/page.tsx:119-127`, `frontend/app/pay/[ensName]/page.tsx:196-233`).
-- `/owner/create-lease` gates on `isApprovedForAll` and sets gas `600000` (`frontend/app/owner/create-lease/page.tsx:31-37`, `frontend/app/owner/create-lease/page.tsx:99`).
-- `/verify` is public and wallet-free (`frontend/app/verify/page.tsx:79-87`).
-
-## 3.3 API routes
-
-- `POST /api/kyc/initiate` returns UUID sessionId (`frontend/app/api/kyc/initiate/route.ts:26-29`).
-- `POST /api/kyc/webhook` calls on-chain `setPersonaVerified(namehash(ensName))` with backend key (`frontend/app/api/kyc/webhook/route.ts:30-57`).
-- `GET /api/qr/[ensName]` returns PNG QR for `/pay/${ensName}` (`frontend/app/api/qr/[ensName]/route.ts:9-25`).
+| Required by CLAUDE.md | Status |
+|---|---|
+| `components/WalletConnect.tsx` | Exists |
+| `components/PaymentCard.tsx` | Exists |
+| `components/LeaseCard.tsx` | Exists |
+| `components/KYCFlow.tsx` | Exists |
+| `components/QRCode.tsx` | Exists |
+| `components/TransactionStatus.tsx` | Exists |
+| `hooks/useLease.ts` | Exists (ownerLabels issue — see §3) |
+| `hooks/usePayRent.ts` | Exists, fully used |
+| `hooks/useENSProfile.ts` | Exists (ownerLabels-dependent — see §3) |
+| `lib/ens.ts` | Matches spec + bonus `findLeaseIdByEnsName` |
+| `lib/wagmi.ts` | Exact match with ENS override |
+| `lib/contracts.ts` | Match + `ownerLabels` extra entry |
+| `lib/privy.ts` | Exists with `isInjectedConnector` helper |
+| `types/index.ts` | Exists |
+| `app/api/kyc/initiate/route.ts` | Exact match |
+| `app/api/kyc/webhook/route.ts` | Real on-chain `setPersonaVerified` tx |
+| `app/api/qr/[ensName]/route.ts` | Exact match |
+| All 7 required pages | All exist |
+| `contracts/script/SetupENS.s.sol` | Exists |
+| `scripts/setup-ens.ts` | Exists (missing namehash output — see §3) |
 
 ---
 
-## 4. Mismatch Table (Strict Parity)
+## 3. Mismatch Table
 
-| Area | Expected in claude.md | Current implementation | Severity | Recommended fix |
+| Area | Expected in CLAUDE.md | Current implementation | Severity | Recommended fix |
 |---|---|---|---|---|
-| Role wallet boundary (Owner/PM) | Owner/PM must use MetaMask/injected EOA (`CLAUDE.md:33`, `CLAUDE.md:886`, `CLAUDE.md:919`) | Owner/PM pages depend on `usePrivy()` login flow; global provider allows email login for all roles (`frontend/app/providers.tsx:21`, `frontend/app/owner/create-lease/page.tsx:17`, `frontend/app/owner/dashboard/page.tsx:10`, `frontend/app/onboard/add-owner/page.tsx:17`) | major | Enforce injected-only flow on owner/PM routes. Keep Privy embedded flow for tenant-only routes. |
-| Required frontend module structure | `components` must include WalletConnect/PaymentCard/LeaseCard/KYCFlow/QRCode/TransactionStatus (`CLAUDE.md:139-145`) | Only `TransactionStatus.tsx` exists; other required component files missing | major | Add missing component files and move inline card/UI logic out of page files. |
-| Required hooks structure | Must include `useLease`, `usePayRent`, `useENSProfile` (`CLAUDE.md:151-154`, `CLAUDE.md:1025`) | Only `useLease.ts` exists; `usePayRent.ts` and `useENSProfile.ts` missing (`frontend/hooks`) | major | Implement missing hooks and migrate `/pay` + ENS profile logic into them. |
-| Required `lib/privy.ts` module | `frontend/lib/privy.ts` required (`CLAUDE.md:150`) | File missing; Privy config is embedded in `app/providers.tsx` | major | Create `frontend/lib/privy.ts` and centralize Privy config/utilities there. |
-| Tenant dashboard identity requirement | Tenant cards must include persona.verified badge (`CLAUDE.md:911`) | Tenant dashboard renders lease/payment fields but no persona badge (`frontend/app/tenant/dashboard/page.tsx:212-274`) | major | Read persona text record (via ENS helper/hook) and show required badge on each tenant lease card. |
-| Three-tier naming consistency | Hierarchy is PM -> Owner -> Tenant (`CLAUDE.md:38`, `CLAUDE.md:71-75`) | Multiple two-tier fallbacks remain; name composition can drop owner label (`frontend/app/onboarding/page.tsx:67-69`, `frontend/app/owner/dashboard/page.tsx:242-244`, `frontend/app/tenant/dashboard/page.tsx:202-204`) | major | Remove two-tier fallback paths for production/demo flow; enforce owner-label-aware three-tier naming and fail loudly when owner context missing. |
-| `/pay` required lease trust signal | Display includes green "Verified Lease" badge (`CLAUDE.md:865`) | Page shows only "Identity Verified" badge when persona exists (`frontend/app/pay/[ensName]/page.tsx:287-291`) | minor | Add explicit verified lease badge when ENS + contract checks pass. |
-| `/pay` mint button criticality | Mint 10,000 USDC button is critical demo affordance (`CLAUDE.md:867-868`, `CLAUDE.md:597`) | Mint button is hidden unless connected and balance query is active (`frontend/app/pay/[ensName]/page.tsx:339-356`) | minor | Keep mint CTA visible in ready/no-wallet states (connect prompt + mint intent), not only inside connected balance panel. |
-| Landing IA parity | Landing should have two buttons: Tenant and Owner (`CLAUDE.md:849`) | Landing has three persona cards including PM (`frontend/app/page.tsx:23-72`) | minor | Align IA to spec or update `CLAUDE.md` to reflect PM-first landing as intended architecture. |
-| Setup script parity | `setup-ens.ts` should include parent-namehash output + documented operator flow (`CLAUDE.md:689-716`, `CLAUDE.md:739`) | Script only checks/sets operator approval; no parent-node computation/output (`scripts/setup-ens.ts:37-83`) | major | Extend script to compute and print `namehash(PARENT_ENS_NAME)` and align output with env setup steps in spec. |
-| Verification script architecture drift | Architecture assumes owner subname context in three-tier flow (`CLAUDE.md:38`, `CLAUDE.md:69-74`) | `verify-checkpoint.mjs` creates lease directly under root parent (`scripts/verify-checkpoint.mjs:110-140`) | major | Update checkpoint script to follow PM->owner->tenant path or clearly mark as isolated non-architecture smoke test. |
-| Docs architecture parity (root README) | Three-tier examples and role boundaries should match spec (`CLAUDE.md:38`, `CLAUDE.md:71-75`) | README uses two-tier lease examples and global Privy wording (`README.md:7`, `README.md:22`, `README.md:40`, `README.md:130`) | major | Rewrite README examples and wallet-role text to strict three-tier + role-specific wallet model. |
-| Docs quality parity (frontend/contracts README) | Project docs should describe this architecture, not templates (`CLAUDE.md:3`, `CLAUDE.md:104-159`) | `frontend/README.md` is default create-next-app template; `contracts/README.md` still references `Counter` deploy command (`frontend/README.md:1-35`, `contracts/README.md:61`) | minor | Replace template docs with project-specific setup, flows, and command references. |
-| Separation of concerns in page files | Structure implies reusable component/hook boundaries (`CLAUDE.md:139-154`) | `LeaseCard` and `TenantLeaseCard` are embedded inside page modules; shared `useLease`/`TransactionStatus` are currently unused (`frontend/app/owner/dashboard/page.tsx:165-353`, `frontend/app/tenant/dashboard/page.tsx:139-274`, `frontend/hooks/useLease.ts`, `frontend/components/TransactionStatus.tsx`) | major | Extract card components and adopt shared hooks/components consistently. |
-| Contract surface strict parity | Spec skeleton does not include `ownerLabels` mapping (`CLAUDE.md:281-287`) | Contract + ABI expose `ownerLabels` as extra surface (`contracts/src/LeaseManager.sol:40`, `frontend/lib/contracts.ts:207-212`) | minor | Either document this extension in `CLAUDE.md` or remove it and derive owner labels by deterministic naming/context. |
-| KYC backend-path test coverage | Architecture includes backend-gated `setPersonaVerified` (`CLAUDE.md:503-507`, `CLAUDE.md:940-945`) | Contract tests do not cover `setPersonaVerified` success/failure paths | minor | Add Foundry tests for onlyBackend enforcement and text-write behavior. |
+| Contract: `ownerLabels` mapping | No `ownerLabels` in `LeaseManager` skeleton (CLAUDE.md:281-287) | `mapping(bytes32 => string) public ownerLabels` added; written on every `registerOwner()` call (LeaseManager.sol:40, :96) | MAJOR | Tracked in `DEFERRED_CONTRACT_CLEANUP.md`. Remove post-demo and redeploy. |
+| ABI: `ownerLabels` | No `ownerLabels` entry in leaseManagerAbi | `leaseManagerAbi` in `frontend/lib/contracts.ts` exposes `ownerLabels`; hooks call it on-chain | MAJOR | Remove when contract is cleaned up. ABI and contract must co-move. |
+| `hooks/useLease.ts` calls `ownerLabels` | `useLease` reads only spec-defined contract surface | `useLease.ts:34-40` calls `ownerLabels(parentNode)` — non-spec function. Hook is not used by any page (pages use inline `useReadContract`) | MAJOR | Unused so no runtime impact now. Refactor when `ownerLabels` is removed. |
+| `hooks/useENSProfile.ts` calls `ownerLabels` | ENS name composition comes from `lib/ens.ts` alone | `useENSProfile.ts:31-45` calls `ownerLabels` on-chain to get owner label, then constructs three-tier name | MAJOR | Current necessary workaround. Must be refactored when `ownerLabels` is removed — derive owner label from ENS text records on owner subname instead. |
+| KYC onboarding requires pre-existing lease | CLAUDE.md implies KYC happens after email login, independently | `onboarding/page.tsx:56-59`: if `ensProfile.ensName` is null (no lease exists yet), `handleVerifyIdentity` errors with "No strict three-tier ENS lease found" | MAJOR | Add clear message: "Your owner must create a lease for your address before you can complete verification." CLAUDE.md does not address this ordering dependency. |
+| `setup-ens.ts` missing namehash output | CLAUDE.md:730-731: script must print namehash for copying into `.env.local` as `NEXT_PUBLIC_PARENT_NODE` | Script prints approval status only — no namehash output (scripts/setup-ens.ts:60-90) | MINOR | Add `console.log('NEXT_PUBLIC_PARENT_NODE=', namehash(parentEnsName))` to script output. |
+| `verify-checkpoint.mjs` bypasses three-tier hierarchy | Architecture: PM -> Owner -> Tenant for all lease creation | Script creates lease directly under root `parentNode`, skipping owner subname tier | MINOR | Mark clearly as "flat smoke test, not production flow" or add three-tier path. |
+| Two-tier fallback strings in UI | Three-tier naming enforced everywhere (CLAUDE.md:38,75) | `owner/dashboard/page.tsx:257` and `tenant/dashboard/page.tsx:193`: `ensProfile.ensName \|\| \`UNRESOLVED.${lease.label}\`` shows a non-valid ENS placeholder | MINOR | Replace with `"Resolving..."` or a skeleton loader. Never show a fake ENS string. |
+| Landing: 3 persona cards vs 2 buttons | CLAUDE.md:849: two CTAs — Tenant and Owner | `page.tsx` has three cards: Tenant, Owner, Property Manager | MINOR | Either remove PM card or document the three-CTA design in CLAUDE.md. PM card aids demo judges. |
+| `PersonaVerified` event not in CLAUDE.md | `setPersonaVerified` emits no event in spec skeleton | Implementation emits `PersonaVerified(node, timestamp)` (LeaseManager.sol:55) | NONE — enhancement | Update CLAUDE.md to document it. |
+| `findLeaseIdByEnsName` in `lib/ens.ts` | Spec code shows 4 functions; prose at CLAUDE.md:873 implies this logic must exist | Fifth function correctly implements the prose requirement | NONE — compliant | No action needed. |
+| `isInjectedConnector` in `lib/privy.ts` | CLAUDE.md lists `privy.ts` as required; no content spec | Extra helper enabling role-based wallet detection across all pages | NONE — enhancement | No action needed. |
+| `frontend/README.md` | Should describe the project | Default Next.js "create-next-app" template | MINOR | Replace with project setup and route reference. |
+| `contracts/README.md` | Should describe contracts setup | Still references `Counter` deploy example | MINOR | Replace with Foundry commands and contract addresses. |
+| Extra root files | Not in CLAUDE.md structure | `ARCHITECTURE_AUDIT.md`, `DEFERRED_CONTRACT_CLEANUP.md`, `scripts/integration-checks.mjs`, `scripts/verify-checkpoint.mjs` | TRIVIAL | Acceptable doc/tooling artifacts. |
 
 ---
 
-## 5. Missing, Extra, Misplaced
+## 4. Extra Pieces (Present, Not in CLAUDE.md)
 
-## 5.1 Missing (required but absent)
+All additive — none break the architecture:
 
-- `frontend/components/WalletConnect.tsx`
-- `frontend/components/PaymentCard.tsx`
-- `frontend/components/LeaseCard.tsx`
-- `frontend/components/KYCFlow.tsx`
-- `frontend/components/QRCode.tsx`
-- `frontend/hooks/usePayRent.ts`
-- `frontend/hooks/useENSProfile.ts`
-- `frontend/lib/privy.ts`
-
-## 5.2 Extra (present but outside strict target structure)
-
-- `scripts/verify-checkpoint.mjs` (useful, but not in required structure and currently diverges from three-tier architecture).
-- `ownerLabels` on-chain mapping and ABI surface (extension not defined in target skeleton).
-
-## 5.3 Misplaced/coupled incorrectly
-
-- Lease card UI logic is embedded in route pages instead of `components/LeaseCard.tsx`.
-- Pay flow state machine and tx sequencing are embedded in route page instead of `hooks/usePayRent.ts`.
-- Privy configuration is embedded in `app/providers.tsx` instead of `lib/privy.ts`.
-- ENS profile composition logic is duplicated in multiple pages instead of a shared ENS profile hook/helper.
+- `ownerLabels` on-chain mapping + ABI + hook calls (documented divergence, tracked in `DEFERRED_CONTRACT_CLEANUP.md`)
+- `PersonaVerified` event on `setPersonaVerified`
+- `findLeaseIdByEnsName` in `lib/ens.ts`
+- `isInjectedConnector` in `lib/privy.ts`
+- `scripts/integration-checks.mjs`, `scripts/verify-checkpoint.mjs`
 
 ---
 
-## 6. Consistency Scorecard
+## 5. Consistency Scorecard
 
-| Dimension | Status | Notes |
+| Dimension | Score | Notes |
 |---|---|---|
-| Architecture | partial | Core flow works, but role-wallet boundary and module structure drift are significant. |
-| Naming | partial | Three-tier naming not consistently enforced; two-tier fallbacks/docs remain. |
-| File/folder organization | partial | Core routes exist, but required component/hook/lib modules are missing. |
-| Dependency boundaries | partial | API/contract boundary is good; auth boundary across roles is not. |
-| Data flow | partial | `/pay` flow is robust; tenant persona signal not propagated to dashboard cards. |
-| State management | partial | Heavy route-local logic; shared hooks/components underused or missing. |
-| Smart contract vs frontend responsibilities | mostly aligned | Contract lifecycle responsibilities are correct; frontend role/auth handling diverges. |
-| ENS logic placement | partial | `lib/ens.ts` is correct base, but ENS profile/name composition is scattered. |
-| Onboarding/verification/payment placement | mostly aligned | Route placement is correct; some strict UX/spec details still missing. |
+| Architecture | 8/10 | All tiers present and working; `ownerLabels` is documented debt |
+| Naming | 9/10 | Two-tier placeholder strings remain in two card components |
+| File/folder organization | 10/10 | Fully matches CLAUDE.md required structure |
+| Dependency boundaries | 9/10 | Contract/API/frontend boundaries respected |
+| Data flow | 9/10 | `/pay` flow correct; KYC-before-lease edge case unhandled |
+| State management | 9/10 | Hooks used correctly throughout; `useLease` is defined but unused by pages |
+| Contract vs frontend responsibilities | 9/10 | All ENS writes in contract, all reads in frontend |
+| ENS logic placement | 9/10 | `lib/ens.ts` is the single ENS entry point; `useENSProfile` wraps it correctly |
+| Three-tier naming | 8/10 | Enforced via `useENSProfile`; two cosmetic fallback strings remain |
 
 ---
 
-## 7. Remediation Plan
+## 6. Remediation Plan
 
-## 7.1 Priority order
+### Quick fixes (< 30 min each)
 
-1. Enforce role wallet boundaries (owner/PM injected wallets only).
-2. Restore strict module boundaries (`components`, `hooks`, `lib/privy`).
-3. Fix three-tier naming consistency and persona badge propagation.
-4. Align setup/checkpoint scripts with architecture.
-5. Bring docs to strict parity.
+1. **Add namehash output to `scripts/setup-ens.ts`**
+   Add `console.log('NEXT_PUBLIC_PARENT_NODE=', namehash(parentEnsName))` before the approval check.
 
-## 7.2 Quick fixes (high impact, low effort)
+2. **Replace two-tier fallback strings**
+   `frontend/app/owner/dashboard/page.tsx:257` and `frontend/app/tenant/dashboard/page.tsx:193`
+   Change `ensProfile.ensName || \`UNRESOLVED.${lease.label}\`` to `ensProfile.ensName || '...'`
 
-1. Add explicit verified lease badge and always-visible mint CTA behavior on `/pay`.
-   - Files: `frontend/app/pay/[ensName]/page.tsx`.
-2. Add persona.verified badge to tenant cards.
-   - Files: `frontend/app/tenant/dashboard/page.tsx`, `frontend/lib/ens.ts` (or new hook).
-3. Remove two-tier placeholders/examples in UI/docs.
-   - Files: `frontend/app/verify/page.tsx`, `README.md`.
-4. Add KYC backend-path tests.
-   - Files: `contracts/test/LeaseManager.t.sol`.
+3. **Add no-lease message to `/onboarding` KYC step**
+   `frontend/app/onboarding/page.tsx`
+   When `!ensProfile.ensName` in KYC step: show "Ask your property owner to create a lease for your address first."
 
-## 7.3 Deeper refactors (structural corrections)
+4. **Replace template READMEs**
+   `frontend/README.md` and `contracts/README.md`
 
-1. Split auth by role and enforce wallet policy:
-   - Tenant routes: Privy embedded wallet.
-   - Owner/PM routes: injected connector only.
-   - Files: `frontend/app/providers.tsx`, `frontend/lib/privy.ts` (new), `frontend/app/owner/*`, `frontend/app/onboard/add-owner/page.tsx`.
-2. Implement missing architecture modules and move inline logic:
-   - New: `frontend/components/WalletConnect.tsx`, `PaymentCard.tsx`, `LeaseCard.tsx`, `KYCFlow.tsx`, `QRCode.tsx`
-   - New: `frontend/hooks/usePayRent.ts`, `frontend/hooks/useENSProfile.ts`
-   - Refactor: `frontend/app/pay/[ensName]/page.tsx`, `frontend/app/onboarding/page.tsx`, `frontend/app/owner/dashboard/page.tsx`, `frontend/app/tenant/dashboard/page.tsx`.
-3. Unify ENS profile derivation and enforce three-tier naming:
-   - Files: `frontend/lib/ens.ts`, `frontend/hooks/useENSProfile.ts` (new), affected pages above.
-4. Align scripts with architecture narrative:
-   - Files: `scripts/setup-ens.ts`, `scripts/verify-checkpoint.mjs`.
-5. Update docs to architecture truth:
-   - Files: `README.md`, `frontend/README.md`, `contracts/README.md`.
+### Deeper refactors (deferred, post-demo)
 
-## 7.4 Target structure (strict parity)
+1. **Remove `ownerLabels` from contract** — per `DEFERRED_CONTRACT_CLEANUP.md`.
+   - Redeploy `LeaseManager`.
+   - Remove from ABI in `lib/contracts.ts`.
+   - Refactor `useENSProfile` to derive owner label from ENS `owner.address` text record on owner subname, or accept explicit owner label as input.
+   - Refactor `useLease` to remove the dead `ownerLabels` call.
 
-```
-frontend/
-  components/
-    WalletConnect.tsx
-    PaymentCard.tsx
-    LeaseCard.tsx
-    KYCFlow.tsx
-    QRCode.tsx
-    TransactionStatus.tsx
-  hooks/
-    useLease.ts
-    usePayRent.ts
-    useENSProfile.ts
-  lib/
-    ens.ts
-    contracts.ts
-    wagmi.ts
-    privy.ts
-```
+2. **Fix `verify-checkpoint.mjs`** — make it follow PM→owner→tenant path or mark clearly as flat smoke test.
 
 ---
 
-## 8. Final Verdict
+## 7. Final Verdict
 
-- Compliance score: **6.3 / 10**
-- Alignment class: **partially aligned**
+**Compliance score: 8.5 / 10**
+**Alignment class: Broadly aligned**
 
-Rationale:
-- Core contract and route coverage are substantially in place, and core anti-scam pay flow is implemented correctly.
-- Strict architecture parity still fails on role wallet boundaries, required module structure, naming consistency, and script/docs alignment.
+The core anti-scam flow, three-tier ENS hierarchy, contract lifecycle, payment flow, KYC webhook, and all required modules are correctly implemented. The only load-bearing divergence is `ownerLabels`, which is self-documented and deferred. All remaining mismatches are cosmetic or script-level.
 
-Top 5 actions to restore alignment fastest:
-1. Enforce owner/PM injected-wallet-only auth boundary.
-2. Implement missing `components/`, `hooks/`, and `lib/privy.ts` modules and refactor page-local logic into them.
-3. Enforce three-tier naming everywhere (remove two-tier fallbacks/examples).
-4. Add tenant persona.verified badge and shared ENS profile hook.
-5. Align setup/checkpoint scripts and all README files to `CLAUDE.md` behavior.
+**Top 5 actions:**
 
+1. Remove `ownerLabels` from contract + ABI + hooks (post-demo redeploy)
+2. Replace two-tier placeholder strings in dashboard card components
+3. Add no-lease guard message to `/onboarding` KYC step
+4. Add `namehash` output to `setup-ens.ts`
+5. Replace template READMEs in `frontend/` and `contracts/`
