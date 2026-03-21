@@ -167,6 +167,29 @@ export const leaseManagerAbi = [
   },
   {
     type: 'function',
+    name: 'setPersonaVerified',
+    inputs: [{ name: 'node', type: 'bytes32' }],
+    outputs: [],
+    stateMutability: 'nonpayable',
+  },
+  {
+    type: 'function',
+    name: 'backendWallet',
+    inputs: [],
+    outputs: [{ name: '', type: 'address' }],
+    stateMutability: 'view',
+  },
+  {
+    type: 'event',
+    name: 'PersonaVerified',
+    inputs: [
+      { name: 'node', type: 'bytes32', indexed: true },
+      { name: 'timestamp', type: 'uint256', indexed: false },
+    ],
+    anonymous: false,
+  },
+  {
+    type: 'function',
     name: 'MONTH',
     inputs: [],
     outputs: [{ name: '', type: 'uint256' }],

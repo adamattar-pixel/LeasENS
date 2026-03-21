@@ -12,6 +12,7 @@ contract LeaseManager is ERC1155Holder {
     INameWrapper    public immutable nameWrapper;
     IPublicResolver public immutable publicResolver;
     IERC20          public immutable paymentToken;
+    address         public immutable backendWallet; // for setPersonaVerified
 
     uint256 public constant MONTH           = 30 days;
     uint256 public constant MAX_PENALTY_BPS = 10000; // 100% of rent
@@ -50,12 +51,20 @@ contract LeaseManager is ERC1155Holder {
     event PenaltyAccrued(uint256 indexed leaseId, uint256 penaltyAmount, uint256 totalAccrued);
     event LeaseTerminated(uint256 indexed leaseId, address indexed terminatedBy, string reason);
     event OwnerRegistered(bytes32 indexed parentNode, bytes32 ownerNode, string label, address ownerAddress);
+    event PersonaVerified(bytes32 indexed node, uint256 timestamp);
+
+    // ─── Modifiers ─────────────────────────────────────────────
+    modifier onlyBackend() {
+        require(msg.sender == backendWallet, "Only backend wallet");
+        _;
+    }
 
     // ─── Constructor ─────────────────────────────────────────────
-    constructor(address _nameWrapper, address _publicResolver, address _paymentToken) {
+    constructor(address _nameWrapper, address _publicResolver, address _paymentToken, address _backendWallet) {
         nameWrapper    = INameWrapper(_nameWrapper);
         publicResolver = IPublicResolver(_publicResolver);
         paymentToken   = IERC20(_paymentToken);
+        backendWallet  = _backendWallet;
     }
 
     // ─── Owner Onboarding (P2) ───────────────────────────────────
@@ -234,6 +243,16 @@ contract LeaseManager is ERC1155Holder {
         );
 
         emit LeaseTerminated(leaseId, msg.sender, reason);
+    }
+
+    // ─── KYC (P2) ────────────────────────────────────────────────
+    /// @notice Backend writes Persona verification to ENS text records.
+    ///         Called by the backend wallet after mock KYC completes.
+    ///         Works because the contract owns lease subnames permanently.
+    function setPersonaVerified(bytes32 node) external onlyBackend {
+        publicResolver.setText(node, "persona.verified",  "true");
+        publicResolver.setText(node, "persona.timestamp", _uint2str(block.timestamp));
+        emit PersonaVerified(node, block.timestamp);
     }
 
     // ─── View Functions ──────────────────────────────────────────

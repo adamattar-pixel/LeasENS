@@ -16,7 +16,8 @@ contract Deploy is Script {
         LeaseManager leaseManager = new LeaseManager(
             NAME_WRAPPER,
             PUBLIC_RESOLVER,
-            address(usdc)
+            address(usdc),
+            msg.sender  // deployer is the backend wallet
         );
 
         console.log("MockUSDC deployed at:     ", address(usdc));

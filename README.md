@@ -45,8 +45,8 @@ residence-epfl.eth                    (Property Manager)
 
 | Contract | Address |
 |----------|---------|
-| LeaseManager | `0xcAe2921209F419C45fD9cfdbE73e68bA91Ec9962` |
-| MockUSDC | `0x6890741124d46B9Bb3f7e90fb65CfB79356dCfcb` |
+| LeaseManager | `0xE655B10A36c1891504105Cbf2982FFc6d56aa7fC` |
+| MockUSDC | `0xfC57fA71eF75284a8843A380daa886C301814822` |
 | NameWrapper | `0x0635513f179D50A207757E05759CbD106d7dFcE8` (Sepolia ENS) |
 | PublicResolver | `0x8FADE66B79cC9f707aB26799354482EB93a5B7dD` (Sepolia ENS) |
 
@@ -65,7 +65,7 @@ Parent ENS name: `residence-epfl.eth`
 | `/pay/[ensName]` | Payment page — ENS verification, USDC payment |
 | `/verify` | Public ENS lease lookup — resolve any name, show text records |
 | `/api/qr/[ensName]` | QR code PNG generation |
-| `/api/kyc/webhook` | Mock KYC webhook (architecture demo) |
+| `/api/kyc/webhook` | KYC webhook — calls `setPersonaVerified()` on-chain |
 
 ## Setup
 
@@ -92,13 +92,14 @@ npm install
 Create `frontend/.env.local`:
 
 ```env
-NEXT_PUBLIC_LEASE_MANAGER_ADDRESS=0xcAe2921209F419C45fD9cfdbE73e68bA91Ec9962
-NEXT_PUBLIC_MOCK_USDC_ADDRESS=0x6890741124d46B9Bb3f7e90fb65CfB79356dCfcb
+NEXT_PUBLIC_LEASE_MANAGER_ADDRESS=0xE655B10A36c1891504105Cbf2982FFc6d56aa7fC
+NEXT_PUBLIC_MOCK_USDC_ADDRESS=0xfC57fA71eF75284a8843A380daa886C301814822
 NEXT_PUBLIC_SEPOLIA_RPC=https://eth-sepolia.g.alchemy.com/v2/<YOUR_KEY>
 NEXT_PUBLIC_PRIVY_APP_ID=<YOUR_PRIVY_APP_ID>
 NEXT_PUBLIC_PARENT_NODE=0xb037c2333616690a48daa1c695a4b349c28c5e2267f4c8039eb0a2c1eb1f6340
 NEXT_PUBLIC_APP_URL=http://localhost:3000
 NEXT_PUBLIC_PARENT_ENS_NAME=residence-epfl.eth
+BACKEND_WALLET_PRIVATE_KEY=0x...  # wallet that calls setPersonaVerified()
 ```
 
 ```bash

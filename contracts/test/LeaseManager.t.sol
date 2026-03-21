@@ -136,7 +136,8 @@ contract LeaseManagerTest is Test {
         leaseManager = new LeaseManager(
             address(nameWrapper),
             address(resolver),
-            address(usdc)
+            address(usdc),
+            address(this)  // test contract is the backend wallet
         );
     }
 

@@ -1,18 +1,18 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { createPublicClient, createWalletClient, http, namehash } from 'viem';
+import { sepolia } from 'viem/chains';
+import { privateKeyToAccount } from 'viem/accounts';
+import { LEASE_MANAGER_ADDRESS, leaseManagerAbi } from '@/lib/contracts';
 
 /**
  * POST /api/kyc/webhook
  *
- * Mock KYC verification webhook.
+ * KYC verification webhook. Called after tenant completes identity verification.
+ * Uses a backend wallet to call leaseManager.setPersonaVerified(node), which
+ * writes persona.verified=true + persona.timestamp to the ENS text record on-chain.
  *
- * In production, this would:
- * 1. Receive a Persona webhook confirming identity verification
- * 2. Call leaseManager.setPersonaVerified(namehash(ensName)) using BACKEND_WALLET_PRIVATE_KEY
- * 3. Write persona.verified=true + persona.timestamp to the ENS text record
- *
- * The deployed contract does not include setPersonaVerified() — KYC is mocked
- * on the frontend (2s delay → verified badge). This route exists to demonstrate
- * the intended architecture for the hackathon judges.
+ * Body: { ensName: string }
+ * Returns: { success: true, txHash: string }
  */
 export async function POST(request: NextRequest) {
   try {
@@ -23,33 +23,50 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'ensName is required' }, { status: 400 });
     }
 
-    // In production with a contract that has setPersonaVerified():
-    //
-    // import { createWalletClient, http, namehash } from 'viem';
-    // import { sepolia } from 'viem/chains';
-    // import { privateKeyToAccount } from 'viem/accounts';
-    //
-    // const account = privateKeyToAccount(process.env.BACKEND_WALLET_PRIVATE_KEY);
-    // const wallet = createWalletClient({ account, chain: sepolia, transport: http(RPC) });
-    // const node = namehash(ensName);
-    // const txHash = await wallet.writeContract({
-    //   address: LEASE_MANAGER_ADDRESS,
-    //   abi: leaseManagerAbi,
-    //   functionName: 'setPersonaVerified',
-    //   args: [node],
-    // });
-    //
-    // return NextResponse.json({ success: true, txHash });
+    const pk = process.env.BACKEND_WALLET_PRIVATE_KEY;
+    if (!pk) {
+      return NextResponse.json({ error: 'BACKEND_WALLET_PRIVATE_KEY not configured' }, { status: 500 });
+    }
 
-    // Mock response — persona.verified is shown via frontend state
+    const rpc = process.env.NEXT_PUBLIC_SEPOLIA_RPC || 'https://rpc.sepolia.org';
+    const account = privateKeyToAccount(pk as `0x${string}`);
+
+    const publicClient = createPublicClient({
+      chain: sepolia,
+      transport: http(rpc),
+    });
+
+    const walletClient = createWalletClient({
+      account,
+      chain: sepolia,
+      transport: http(rpc),
+    });
+
+    const node = namehash(ensName);
+
+    // Call setPersonaVerified on the contract
+    const txHash = await walletClient.writeContract({
+      address: LEASE_MANAGER_ADDRESS,
+      abi: leaseManagerAbi,
+      functionName: 'setPersonaVerified',
+      args: [node],
+    });
+
+    // Wait for confirmation
+    const receipt = await publicClient.waitForTransactionReceipt({ hash: txHash });
+
+    if (receipt.status !== 'success') {
+      return NextResponse.json({ error: 'Transaction reverted' }, { status: 500 });
+    }
+
     return NextResponse.json({
       success: true,
       ensName,
-      verified: true,
-      note: 'Mock KYC — setPersonaVerified() not on deployed contract. Verification shown via frontend state.',
-      timestamp: Math.floor(Date.now() / 1000),
+      txHash,
+      blockNumber: Number(receipt.blockNumber),
     });
-  } catch {
-    return NextResponse.json({ error: 'Invalid request body' }, { status: 400 });
+  } catch (e) {
+    const message = e instanceof Error ? e.message : 'Unknown error';
+    return NextResponse.json({ error: message.slice(0, 200) }, { status: 500 });
   }
 }
