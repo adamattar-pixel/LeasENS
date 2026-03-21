@@ -63,7 +63,9 @@ Parent ENS name: `residence-epfl.eth`
 | `/owner/create-lease` | Owner — create lease with ENS subname |
 | `/tenant/dashboard` | Tenant — view lease, mint test USDC, pay link |
 | `/pay/[ensName]` | Payment page — ENS verification, USDC payment |
+| `/verify` | Public ENS lease lookup — resolve any name, show text records |
 | `/api/qr/[ensName]` | QR code PNG generation |
+| `/api/kyc/webhook` | Mock KYC webhook (architecture demo) |
 
 ## Setup
 

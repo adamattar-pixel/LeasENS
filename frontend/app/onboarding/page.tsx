@@ -60,9 +60,20 @@ export default function OnboardingPage() {
     }
   }, [leaseData]);
 
-  function handleVerifyIdentity() {
+  async function handleVerifyIdentity() {
     setStep('verifying');
-    // Mock KYC: 2 second fake loading, then verified
+    // Mock KYC: 2 second fake loading + webhook call, then verified
+    try {
+      if (ensSubname) {
+        await fetch('/api/kyc/webhook', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ensName: ensSubname }),
+        });
+      }
+    } catch {
+      // Webhook is best-effort; verification continues regardless
+    }
     setTimeout(() => {
       setStep('verified');
     }, 2000);

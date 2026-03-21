@@ -96,6 +96,21 @@ export default function Home() {
         </div>
       </div>
 
+      {/* Verify CTA */}
+      <div className="bg-gray-50 border-t border-gray-200">
+        <div className="max-w-4xl mx-auto px-4 py-8 text-center">
+          <p className="text-sm text-gray-500 mb-3">
+            Want to verify a lease independently? Any ENS-aware app can do it &mdash; or use our lookup tool.
+          </p>
+          <a
+            href="/verify"
+            className="inline-block border-2 border-blue-600 text-blue-600 hover:bg-blue-50 font-semibold py-2 px-6 rounded-xl transition-colors text-sm"
+          >
+            Verify an ENS Lease
+          </a>
+        </div>
+      </div>
+
       {/* Footer */}
       <div className="text-center py-6 text-xs text-gray-400">
         Built for the StableCoins &amp; Payments Hackathon &mdash; BSA &times; EPFL &mdash; ENS Track
