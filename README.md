@@ -78,9 +78,12 @@ Parent ENS name: `residence-epfl.eth`
 
 ```bash
 cd contracts
+forge install OpenZeppelin/openzeppelin-contracts --no-commit
 forge build
 forge test
 ```
+
+Create `contracts/.env` by copying `contracts/.env.example`, then fill in your keys.
 
 ### Frontend
 

@@ -1,3 +1,13 @@
+## Project Setup
+
+Install dependencies after cloning:
+
+```shell
+$ forge install OpenZeppelin/openzeppelin-contracts --no-commit
+```
+
+Create `contracts/.env` from `contracts/.env.example` before deploying scripts.
+
 ## Foundry
 
 **Foundry is a blazing fast, portable and modular toolkit for Ethereum application development written in Rust.**

@@ -2,3 +2,7 @@
 out/
 cache/
 lib/
+
+# Local secrets
+.env
+!.env.example
