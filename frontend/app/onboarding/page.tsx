@@ -25,7 +25,9 @@ export default function OnboardingPage() {
     query: { enabled: !!address },
   });
 
-  const firstLeaseId = tenantLeaseIds && tenantLeaseIds.length > 0 ? tenantLeaseIds[0] : undefined;
+  const firstLeaseId =
+    tenantLeaseIds && tenantLeaseIds.length > 0 ? tenantLeaseIds[0] : undefined;
+
   const { data: leaseData } = useReadContract({
     address: LEASE_MANAGER_ADDRESS,
     abi: leaseManagerAbi,
@@ -53,8 +55,8 @@ export default function OnboardingPage() {
   }, [privyReady, authenticated, isConnected, step]);
 
   async function handleVerifyIdentity() {
-    if (!address || !ensProfile.ensName) {
-      setKycError('No strict three-tier ENS lease found for this wallet.');
+    if (!address) {
+      setKycError('No wallet connected.');
       return;
     }
 
@@ -62,24 +64,35 @@ export default function OnboardingPage() {
     setKycError(null);
 
     try {
+      // If the tenant already has a lease with an ENS name, write KYC to it.
+      // If not (no lease assigned yet), complete KYC without writing to ENS.
       const initiateRes = await fetch('/api/kyc/initiate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ walletAddress: address, ensName: ensProfile.ensName }),
+        body: JSON.stringify({
+          walletAddress: address,
+          ensName: ensProfile.ensName || '',
+        }),
       });
       const initiateData = await initiateRes.json();
       if (!initiateRes.ok || !initiateData.sessionId) {
         throw new Error(initiateData.error || 'Failed to initiate KYC');
       }
 
-      const webhookRes = await fetch('/api/kyc/webhook', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sessionId: initiateData.sessionId, ensName: ensProfile.ensName }),
-      });
-      const webhookData = await webhookRes.json();
-      if (!webhookRes.ok || !webhookData.success) {
-        throw new Error(webhookData.error || 'Verification transaction failed');
+      // Only call the webhook if we have an ENS name to write to
+      if (ensProfile.ensName) {
+        const webhookRes = await fetch('/api/kyc/webhook', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            sessionId: initiateData.sessionId,
+            ensName: ensProfile.ensName,
+          }),
+        });
+        const webhookData = await webhookRes.json();
+        if (!webhookRes.ok || !webhookData.success) {
+          throw new Error(webhookData.error || 'Verification transaction failed');
+        }
       }
 
       setStep('verified');
@@ -93,22 +106,17 @@ export default function OnboardingPage() {
     ? `${process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000'}/pay/${ensProfile.ensName}`
     : null;
 
-  const strictNameError =
-    ensProfile.error ||
-    (leaseData && !ensProfile.ensName
-      ? 'Owner label missing on-chain. Strict three-tier naming cannot be resolved.'
-      : null);
-
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gray-50 p-4">
+    <div className="min-h-screen flex items-center justify-center page-bg p-4">
       <div className="bg-white rounded-2xl shadow-lg p-8 max-w-md w-full">
         <div className="text-center mb-6">
           <h1 className="text-2xl font-bold text-gray-900">Tenant Onboarding</h1>
           <p className="text-sm text-gray-500 mt-1">Set up your account to pay rent on-chain</p>
         </div>
 
+        {/* Step indicator */}
         <div className="flex items-center justify-center gap-2 mb-8">
-          {['Connect', 'Verify', 'Done'].map((label, i) => {
+          {(['Connect', 'Verify', 'Done'] as const).map((label, i) => {
             const stepIndex = step === 'connect' ? 0 : step === 'kyc' ? 1 : 2;
             const isActive = i <= stepIndex;
             return (
@@ -120,8 +128,12 @@ export default function OnboardingPage() {
                 >
                   {i < stepIndex ? 'OK' : i + 1}
                 </div>
-                <span className={`text-xs ${isActive ? 'text-gray-900' : 'text-gray-400'}`}>{label}</span>
-                {i < 2 && <div className={`w-8 h-0.5 ${i < stepIndex ? 'bg-blue-600' : 'bg-gray-200'}`} />}
+                <span className={`text-xs ${isActive ? 'text-gray-900' : 'text-gray-400'}`}>
+                  {label}
+                </span>
+                {i < 2 && (
+                  <div className={`w-8 h-0.5 ${i < stepIndex ? 'bg-blue-600' : 'bg-gray-200'}`} />
+                )}
               </div>
             );
           })}
@@ -136,23 +148,21 @@ export default function OnboardingPage() {
         )}
 
         {step === 'kyc' && (
-          <>
-            {strictNameError && (
-              <div className="bg-red-50 border border-red-200 rounded-xl p-3 mb-4">
-                <p className="text-sm text-red-700">{strictNameError}</p>
-              </div>
-            )}
-            <KYCFlow
-              status={kycError ? 'error' : 'idle'}
-              walletAddress={address}
-              error={kycError}
-              onVerify={handleVerifyIdentity}
-            />
-          </>
+          <KYCFlow
+            status={kycError ? 'error' : 'idle'}
+            walletAddress={address}
+            error={kycError}
+            onVerify={handleVerifyIdentity}
+          />
         )}
 
         {step === 'verifying' && (
-          <KYCFlow status="verifying" walletAddress={address} error={kycError} onVerify={handleVerifyIdentity} />
+          <KYCFlow
+            status="verifying"
+            walletAddress={address}
+            error={null}
+            onVerify={handleVerifyIdentity}
+          />
         )}
 
         {step === 'verified' && (
@@ -160,10 +170,12 @@ export default function OnboardingPage() {
             <KYCFlow status="verified" walletAddress={address} onVerify={handleVerifyIdentity} />
 
             {ensProfile.ensName ? (
-              <div className="bg-gray-50 rounded-xl p-4 mb-6 space-y-3">
+              <div className="page-bg rounded-xl p-4 mb-6 space-y-3">
                 <div className="text-center">
                   <p className="text-xs text-gray-500 mb-1">Your ENS Subname</p>
-                  <p className="font-mono text-blue-600 font-semibold break-all">{ensProfile.ensName}</p>
+                  <p className="font-mono text-blue-600 font-semibold break-all">
+                    {ensProfile.ensName}
+                  </p>
                 </div>
 
                 <QRCode ensName={ensProfile.ensName} />
@@ -178,9 +190,10 @@ export default function OnboardingPage() {
                 )}
               </div>
             ) : (
-              <div className="bg-red-50 border border-red-200 rounded-xl p-4 mb-6">
-                <p className="text-sm text-red-700">
-                  Strict three-tier lease name could not be derived. Ask the PM/owner to fix owner label records.
+              <div className="bg-blue-50 border border-blue-200 rounded-xl p-4 mb-6">
+                <p className="text-sm text-blue-700">
+                  Identity verified! Your property manager will assign your lease subname shortly.
+                  Check back at your tenant dashboard once the lease is created.
                 </p>
               </div>
             )}
@@ -194,12 +207,16 @@ export default function OnboardingPage() {
           </div>
         )}
 
-        {ensProfile.loading && (
-          <p className="text-xs text-gray-400 text-center mt-4">Resolving strict three-tier ENS profile...</p>
+        {ensProfile.loading && step !== 'verified' && (
+          <p className="text-xs text-gray-400 text-center mt-4">
+            Resolving ENS profile...
+          </p>
         )}
 
         {user?.email && step !== 'connect' && (
-          <p className="text-xs text-gray-400 text-center mt-4">Signed in as {user.email.address}</p>
+          <p className="text-xs text-gray-400 text-center mt-4">
+            Signed in as {user.email.address}
+          </p>
         )}
 
         <div className="mt-6 text-center">
@@ -211,4 +228,3 @@ export default function OnboardingPage() {
     </div>
   );
 }
-

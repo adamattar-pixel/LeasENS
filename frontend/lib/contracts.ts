@@ -204,13 +204,6 @@ export const leaseManagerAbi = [
     stateMutability: 'view',
   },
   {
-    type: 'function',
-    name: 'ownerLabels',
-    inputs: [{ name: '', type: 'bytes32' }],
-    outputs: [{ name: '', type: 'string' }],
-    stateMutability: 'view',
-  },
-  {
     type: 'event',
     name: 'LeaseCreated',
     inputs: [

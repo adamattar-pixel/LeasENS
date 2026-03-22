@@ -37,7 +37,7 @@ export function KYCFlow({
 
   return (
     <div className="text-center">
-      <div className="bg-gray-50 rounded-xl p-6 mb-6">
+      <div className="bg-blue-50 rounded-xl p-6 mb-6">
         <p className="text-gray-600 mb-2">Verify your identity to complete onboarding.</p>
         <p className="text-xs text-gray-400">
           This writes <span className="font-mono">persona.verified=true</span> to your ENS record.

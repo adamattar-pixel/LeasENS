@@ -37,7 +37,7 @@ export function WalletConnect({
       <p className="text-gray-500 mb-6">{description}</p>
 
       {isConnected && address && !needsInjectedSwitch && (
-        <div className="bg-gray-50 rounded-xl p-4 mb-4">
+        <div className="bg-blue-50 rounded-xl p-4 mb-4">
           <p className="text-xs text-gray-500 mb-1">Connected Wallet</p>
           <p className="font-mono text-sm text-gray-900 break-all">{address}</p>
         </div>
@@ -71,7 +71,7 @@ export function WalletConnect({
       {(isConnected || needsInjectedSwitch) && (
         <button
           onClick={() => disconnect()}
-          className="w-full mt-3 border border-gray-300 text-gray-700 hover:bg-gray-50 font-semibold py-2 px-4 rounded-xl transition-colors text-sm"
+          className="w-full mt-3 border border-gray-300 text-gray-700 hover:bg-blue-50 font-semibold py-2 px-4 rounded-xl transition-colors text-sm"
         >
           Disconnect
         </button>

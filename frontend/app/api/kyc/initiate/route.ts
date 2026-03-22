@@ -14,11 +14,11 @@ import { randomUUID } from 'crypto';
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const { walletAddress, ensName } = body;
+    const { walletAddress } = body;
 
-    if (!walletAddress || !ensName) {
+    if (!walletAddress) {
       return NextResponse.json(
-        { error: 'walletAddress and ensName are required' },
+        { error: 'walletAddress is required' },
         { status: 400 },
       );
     }

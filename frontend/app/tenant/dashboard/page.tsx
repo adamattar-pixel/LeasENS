@@ -53,7 +53,7 @@ export default function TenantDashboardPage() {
 
   if (!isConnected || !address) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-gray-50 p-4">
+      <div className="min-h-screen flex items-center justify-center page-bg p-4">
         <WalletConnect
           role="tenant"
           title="Tenant Dashboard"
@@ -64,7 +64,7 @@ export default function TenantDashboardPage() {
   }
 
   return (
-    <div className="min-h-screen bg-gray-50 p-4">
+    <div className="min-h-screen page-bg p-4">
       <div className="max-w-2xl mx-auto">
         <div className="mb-6">
           <h1 className="text-2xl font-bold text-gray-900">Tenant Dashboard</h1>

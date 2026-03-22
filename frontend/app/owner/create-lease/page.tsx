@@ -1,7 +1,7 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
-import { namehash, parseUnits } from 'viem';
+import { useEffect, useState } from 'react';
+import { parseUnits, namehash } from 'viem';
 import { useAccount, useReadContract, useWaitForTransactionReceipt, useWriteContract } from 'wagmi';
 import { WalletConnect } from '@/components/WalletConnect';
 import { TransactionStatus } from '@/components/TransactionStatus';
@@ -32,26 +32,22 @@ export default function CreateLeasePage() {
   const canManageOwnerFlow = Boolean(isConnected && address && usingInjected);
 
   const parentEnsName = process.env.NEXT_PUBLIC_PARENT_ENS_NAME || 'residence-epfl.eth';
-  const ownerNode = ownerLabel ? (namehash(`${ownerLabel}.${parentEnsName}`) as `0x${string}`) : undefined;
+  const ownerNode = ownerLabel
+    ? (namehash(`${ownerLabel}.${parentEnsName}`) as `0x${string}`)
+    : undefined;
 
-  const { data: isApproved } = useReadContract({
+  const { data: isApproved, refetch: refetchApproval } = useReadContract({
     address: NAME_WRAPPER_ADDRESS,
     abi: nameWrapperAbi,
     functionName: 'isApprovedForAll',
-    args: canManageOwnerFlow ? [address, LEASE_MANAGER_ADDRESS] : undefined,
+    args: canManageOwnerFlow && address ? [address, LEASE_MANAGER_ADDRESS] : undefined,
     query: { enabled: canManageOwnerFlow },
   });
 
-  const {
-    writeContract: writeApproval,
-    data: approvalTxHash,
-    isPending: approvalPending,
-  } = useWriteContract();
-  const {
-    writeContract: writeCreateLease,
-    data: createTxHash,
-    isPending: createPending,
-  } = useWriteContract();
+  const { writeContract: writeApproval, data: approvalTxHash, isPending: approvalPending } =
+    useWriteContract();
+  const { writeContract: writeCreateLease, data: createTxHash, isPending: createPending } =
+    useWriteContract();
 
   const { isSuccess: approvalConfirmed, isLoading: approvalConfirming } =
     useWaitForTransactionReceipt({ hash: approvalTxHash });
@@ -59,21 +55,17 @@ export default function CreateLeasePage() {
     useWaitForTransactionReceipt({ hash: createTxHash });
 
   useEffect(() => {
-    if (approvalConfirmed && pageState === 'approving') {
+    if (approvalConfirmed) {
+      refetchApproval();
       setPageState('form');
     }
-  }, [approvalConfirmed, pageState]);
+  }, [approvalConfirmed, refetchApproval]);
 
   useEffect(() => {
-    if (createConfirmed && pageState === 'creating') {
+    if (createConfirmed) {
       setPageState('success');
     }
-  }, [createConfirmed, pageState]);
-
-  const leaseNamePreview = useMemo(() => {
-    if (!label || !ownerLabel) return null;
-    return `${label}.${ownerLabel}.${parentEnsName}`;
-  }, [label, ownerLabel, parentEnsName]);
+  }, [createConfirmed]);
 
   function handleApproveNameWrapper() {
     if (!canManageOwnerFlow) return;
@@ -88,7 +80,7 @@ export default function CreateLeasePage() {
       },
       {
         onError: (txError) => {
-          setErrorMsg(txError.message);
+          setErrorMsg(txError.message.slice(0, 200));
           setPageState('error');
         },
       }
@@ -96,11 +88,13 @@ export default function CreateLeasePage() {
   }
 
   function handleCreateLease() {
-    if (!canManageOwnerFlow || !ownerNode || !tenantAddress || !label || !rentAmount || !durationMonths) return;
+    if (!canManageOwnerFlow || !ownerNode || !tenantAddress || !label || !rentAmount || !durationMonths)
+      return;
 
+    const preview = `${label}.${ownerLabel}.${parentEnsName}`;
+    setCreatedName(preview);
     setPageState('creating');
     setErrorMsg('');
-    const rentInUSDC = parseUnits(rentAmount, 6);
 
     writeCreateLease(
       {
@@ -111,7 +105,7 @@ export default function CreateLeasePage() {
           ownerNode,
           label,
           tenantAddress as `0x${string}`,
-          rentInUSDC,
+          parseUnits(rentAmount, 6),
           BigInt(durationMonths),
           BigInt(penaltyBps),
         ],
@@ -119,11 +113,8 @@ export default function CreateLeasePage() {
       },
       {
         onError: (txError) => {
-          setErrorMsg(txError.message);
+          setErrorMsg(txError.message.slice(0, 200));
           setPageState('error');
-        },
-        onSuccess: () => {
-          if (leaseNamePreview) setCreatedName(leaseNamePreview);
         },
       }
     );
@@ -131,28 +122,28 @@ export default function CreateLeasePage() {
 
   if (!canManageOwnerFlow) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-gray-50 p-4">
+      <div className="min-h-screen flex items-center justify-center page-bg p-4">
         <WalletConnect
           role="owner"
           title="Create Lease"
-          description="Owner flows require an injected wallet (MetaMask or equivalent). Email-only sessions are blocked."
+          description="Owner flows require an injected wallet (MetaMask). Email-only sessions are blocked."
         />
       </div>
     );
   }
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gray-50 p-4">
+    <div className="min-h-screen flex items-center justify-center page-bg p-4">
       <div className="bg-white rounded-2xl shadow-lg p-8 max-w-md w-full">
         <div className="text-center mb-6">
           <h1 className="text-2xl font-bold text-gray-900">Create Lease</h1>
-          <p className="text-sm text-gray-500 mt-1">Mint a strict three-tier ENS lease subname</p>
+          <p className="text-sm text-gray-500 mt-1">Mint a three-tier ENS lease subname</p>
         </div>
 
         {isApproved === false && pageState === 'form' && (
           <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 mb-6">
             <p className="text-sm text-amber-800 mb-3">
-              You must approve LeaseManager on NameWrapper before creating leases.
+              Approve LeaseManager on NameWrapper before creating leases.
             </p>
             <button
               onClick={handleApproveNameWrapper}
@@ -175,6 +166,7 @@ export default function CreateLeasePage() {
           <TransactionStatus
             isPending={createPending}
             isConfirming={createConfirming}
+            pendingText="Confirm in wallet..."
             confirmingText="Creating lease on-chain..."
           />
         )}
@@ -186,9 +178,9 @@ export default function CreateLeasePage() {
               <input
                 type="text"
                 value={tenantAddress}
-                onChange={(event) => setTenantAddress(event.target.value)}
+                onChange={(e) => setTenantAddress(e.target.value)}
                 placeholder="0x..."
-                className="w-full border border-gray-300 rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                className="w-full border border-gray-300 rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
               />
             </div>
 
@@ -198,11 +190,11 @@ export default function CreateLeasePage() {
                 <input
                   type="text"
                   value={ownerLabel}
-                  onChange={(event) =>
-                    setOwnerLabel(event.target.value.toLowerCase().replace(/[^a-z0-9-]/g, ''))
+                  onChange={(e) =>
+                    setOwnerLabel(e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, ''))
                   }
                   placeholder="dupont"
-                  className="flex-1 border border-gray-300 rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  className="flex-1 border border-gray-300 rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                 />
                 <span className="text-sm text-gray-400 whitespace-nowrap">.{parentEnsName}</span>
               </div>
@@ -213,57 +205,58 @@ export default function CreateLeasePage() {
               <input
                 type="text"
                 value={label}
-                onChange={(event) => setLabel(event.target.value.toLowerCase().replace(/[^a-z0-9-]/g, ''))}
+                onChange={(e) =>
+                  setLabel(e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, ''))
+                }
                 placeholder="apt1"
-                className="w-full border border-gray-300 rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                className="w-full border border-gray-300 rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
               />
             </div>
 
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Monthly Rent (USDC)</label>
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                Monthly Rent (USDC)
+              </label>
               <input
                 type="number"
                 value={rentAmount}
-                onChange={(event) => setRentAmount(event.target.value)}
+                onChange={(e) => setRentAmount(e.target.value)}
                 placeholder="1500"
                 min="0"
                 step="0.01"
-                className="w-full border border-gray-300 rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                className="w-full border border-gray-300 rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
               />
             </div>
 
             <div className="grid grid-cols-2 gap-3">
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Duration (months)</label>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  Duration (months)
+                </label>
                 <input
                   type="number"
                   value={durationMonths}
-                  onChange={(event) => setDurationMonths(event.target.value)}
+                  onChange={(e) => setDurationMonths(e.target.value)}
                   min="1"
                   max="120"
-                  className="w-full border border-gray-300 rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  className="w-full border border-gray-300 rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                 />
               </div>
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Penalty (bps/day)</label>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  Penalty (bps/day)
+                </label>
                 <input
                   type="number"
                   value={penaltyBps}
-                  onChange={(event) => setPenaltyBps(event.target.value)}
+                  onChange={(e) => setPenaltyBps(e.target.value)}
                   min="0"
                   max="1000"
                   placeholder="50"
-                  className="w-full border border-gray-300 rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  className="w-full border border-gray-300 rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                 />
               </div>
             </div>
-
-            {leaseNamePreview && (
-              <div className="bg-gray-50 rounded-xl p-3">
-                <p className="text-xs text-gray-500">Will create:</p>
-                <p className="font-mono text-blue-600 text-sm font-semibold break-all">{leaseNamePreview}</p>
-              </div>
-            )}
 
             <button
               onClick={handleCreateLease}
@@ -277,7 +270,7 @@ export default function CreateLeasePage() {
 
         {pageState === 'success' && (
           <div className="text-center py-4">
-            <div className="text-green-500 text-5xl mb-3">OK</div>
+            <div className="text-green-500 text-5xl mb-3">✓</div>
             <p className="font-semibold text-green-700 text-lg mb-2">Lease Created</p>
             <div className="bg-gray-50 rounded-xl p-4 mb-4 space-y-2">
               <p className="text-xs text-gray-500">ENS Subname</p>
@@ -299,10 +292,13 @@ export default function CreateLeasePage() {
 
         {pageState === 'error' && (
           <div className="text-center py-4">
-            <div className="text-red-500 text-4xl mb-2">X</div>
+            <div className="text-red-500 text-4xl mb-2">✗</div>
             <p className="font-semibold text-red-700 mb-1">Transaction Failed</p>
-            <p className="text-sm text-gray-500 mb-3 break-all">{errorMsg.slice(0, 200)}</p>
-            <button onClick={() => setPageState('form')} className="text-blue-600 hover:underline text-sm">
+            <p className="text-sm text-gray-500 mb-3 break-all">{errorMsg}</p>
+            <button
+              onClick={() => setPageState('form')}
+              className="text-blue-600 hover:underline text-sm"
+            >
               Try Again
             </button>
           </div>
@@ -310,11 +306,10 @@ export default function CreateLeasePage() {
 
         <div className="mt-6 text-center">
           <a href="/owner/dashboard" className="text-sm text-gray-400 hover:text-gray-600">
-            &larr; Back to Dashboard
+            ← Back to Dashboard
           </a>
         </div>
       </div>
     </div>
   );
 }
-

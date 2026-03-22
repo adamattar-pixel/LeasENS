@@ -153,7 +153,7 @@ export default function AddOwnerPage() {
 
   if (!canManagePmFlow) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-gray-50 p-4">
+      <div className="min-h-screen flex items-center justify-center page-bg p-4">
         <WalletConnect
           role="pm"
           title="Register an Owner"
@@ -164,7 +164,7 @@ export default function AddOwnerPage() {
   }
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gray-50 p-4">
+    <div className="min-h-screen flex items-center justify-center page-bg p-4">
       <div className="bg-white rounded-2xl shadow-lg p-8 max-w-md w-full">
         <div className="text-center mb-6">
           <h1 className="text-2xl font-bold text-gray-900">Register an Owner</h1>
@@ -239,7 +239,7 @@ export default function AddOwnerPage() {
             </div>
 
             {label && ownerAddress && (
-              <div className="bg-gray-50 rounded-xl p-3 space-y-1">
+              <div className="page-bg rounded-xl p-3 space-y-1">
                 <p className="text-xs text-gray-500">Will create:</p>
                 <p className="font-mono text-blue-600 text-sm font-semibold break-all">
                   {label}.{parentEnsName}
@@ -266,7 +266,7 @@ export default function AddOwnerPage() {
           <div className="text-center py-4">
             <div className="text-green-500 text-5xl mb-3">OK</div>
             <p className="font-semibold text-green-700 text-lg mb-2">Owner Registered</p>
-            <div className="bg-gray-50 rounded-xl p-4 mb-4 space-y-2">
+            <div className="page-bg rounded-xl p-4 mb-4 space-y-2">
               <p className="text-xs text-gray-500">ENS Subname</p>
               <p className="font-mono text-blue-600 font-semibold break-all">{createdName}</p>
               <p className="text-xs text-gray-500">Owner Node</p>

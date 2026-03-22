@@ -42,7 +42,7 @@ export function PaymentCard({
         </div>
       </div>
 
-      <div className="bg-gray-50 rounded-xl p-4 mb-6 space-y-3">
+      <div className="bg-blue-50 rounded-xl p-4 mb-6 space-y-3">
         <div className="flex justify-between text-sm">
           <span className="text-gray-500">Monthly Rent</span>
           <span className="font-semibold">{formatUnits(monthlyRent, 6)} USDC</span>

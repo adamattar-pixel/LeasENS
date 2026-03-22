@@ -3,9 +3,10 @@ import QRCode from 'qrcode';
 
 export async function GET(
   _request: NextRequest,
-  { params }: { params: { ensName: string } }
+  { params }: { params: Promise<{ ensName: string }> }
 ) {
-  const ensName = decodeURIComponent(params.ensName);
+  const { ensName: rawEnsName } = await params;
+  const ensName = decodeURIComponent(rawEnsName);
   const appUrl = process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000';
   const paymentUrl = `${appUrl}/pay/${ensName}`;
 

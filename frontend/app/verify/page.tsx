@@ -76,7 +76,7 @@ export default function VerifyPage() {
   const hasRecords = textRecords.some((r) => r.value);
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gray-50 p-4">
+    <div className="min-h-screen flex items-center justify-center page-bg p-4">
       <div className="bg-white rounded-2xl shadow-lg p-8 max-w-md w-full">
         {/* Header */}
         <div className="text-center mb-6">
@@ -143,14 +143,14 @@ export default function VerifyPage() {
             </div>
 
             {/* Resolved Address */}
-            <div className="bg-gray-50 rounded-xl p-4 mb-4">
+            <div className="page-bg rounded-xl p-4 mb-4">
               <p className="text-xs text-gray-500 mb-1">Resolved Address</p>
               <p className="font-mono text-sm break-all">{resolvedAddr}</p>
             </div>
 
             {/* Text Records */}
             {hasRecords ? (
-              <div className="bg-gray-50 rounded-xl p-4 space-y-2">
+              <div className="page-bg rounded-xl p-4 space-y-2">
                 <p className="text-xs text-gray-500 mb-2 font-semibold">On-Chain Text Records</p>
                 {textRecords.map((record) =>
                   record.value ? (
@@ -168,7 +168,7 @@ export default function VerifyPage() {
                 )}
               </div>
             ) : (
-              <div className="bg-gray-50 rounded-xl p-4 text-center">
+              <div className="page-bg rounded-xl p-4 text-center">
                 <p className="text-sm text-gray-500">No lease text records found for this name.</p>
               </div>
             )}

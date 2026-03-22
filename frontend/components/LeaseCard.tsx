@@ -76,7 +76,7 @@ export function LeaseCard({
         </div>
       </div>
 
-      <div className="bg-gray-50 rounded-xl p-4 space-y-2 mb-4">
+      <div className="bg-blue-50 rounded-xl p-4 space-y-2 mb-4">
         {tenantAddress && (
           <div className="flex justify-between text-sm gap-3">
             <span className="text-gray-500">Tenant</span>

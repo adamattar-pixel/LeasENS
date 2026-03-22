@@ -1,9 +1,7 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
-import { useReadContract } from 'wagmi';
-import { getLeaseRecords } from '@/lib/ens';
-import { LEASE_MANAGER_ADDRESS, leaseManagerAbi } from '@/lib/contracts';
+import { useEffect, useState } from 'react';
+import { getLeaseRecords, getOwnerLabelFromParentNode } from '@/lib/ens';
 import type { LeaseRecords } from '@/types';
 
 type LeaseSeed = {
@@ -20,51 +18,72 @@ export function useENSProfile({
   leaseSeed?: LeaseSeed;
   enabled?: boolean;
 }) {
+  const [resolvedEnsName, setResolvedEnsName] = useState<string | null>(ensName ?? null);
+  const [ownerLabel, setOwnerLabel] = useState<string | undefined>(undefined);
   const [records, setRecords] = useState<LeaseRecords | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const parentName = process.env.NEXT_PUBLIC_PARENT_ENS_NAME || 'residence-epfl.eth';
-  const leaseParentNode = leaseSeed?.parentNode;
-  const leaseLabel = leaseSeed?.label;
-
-  const { data: ownerLabel } = useReadContract({
-    address: LEASE_MANAGER_ADDRESS,
-    abi: leaseManagerAbi,
-    functionName: 'ownerLabels',
-    args: leaseParentNode ? [leaseParentNode] : undefined,
-    query: { enabled: enabled && !!leaseParentNode },
-  });
-
-  const resolvedEnsName = useMemo(() => {
-    if (!enabled) return null;
-    if (ensName) return ensName;
-    if (!leaseParentNode || !leaseLabel) return null;
-    if (!ownerLabel) return null;
-    return `${leaseLabel}.${ownerLabel}.${parentName}`;
-  }, [enabled, ensName, leaseParentNode, leaseLabel, ownerLabel, parentName]);
 
   useEffect(() => {
     if (!enabled) {
+      setResolvedEnsName(ensName ?? null);
+      setOwnerLabel(undefined);
       setRecords(null);
       setError(null);
       return;
     }
 
-    if (leaseParentNode && leaseLabel && !ownerLabel && !ensName) {
-      setRecords(null);
-      setError('Owner label missing for lease parent node. Cannot build strict three-tier ENS name.');
+    // If a direct ensName was given, use it
+    if (ensName) {
+      setResolvedEnsName(ensName);
       return;
     }
 
-    if (!resolvedEnsName) {
-      setRecords(null);
+    // If no leaseSeed, nothing to resolve
+    if (!leaseSeed?.parentNode || !leaseSeed?.label) {
+      setResolvedEnsName(null);
       return;
     }
 
     let alive = true;
     setLoading(true);
     setError(null);
+    setResolvedEnsName(null);
+
+    getOwnerLabelFromParentNode(leaseSeed.parentNode)
+      .then((label) => {
+        if (!alive) return;
+        if (!label) {
+          setError('Owner label missing for lease parent node. Cannot build strict three-tier ENS name.');
+          setLoading(false);
+          return;
+        }
+        setOwnerLabel(label);
+        const name = `${leaseSeed.label}.${label}.${parentName}`;
+        setResolvedEnsName(name);
+      })
+      .catch(() => {
+        if (!alive) return;
+        setError('Failed to resolve owner label from ENS.');
+        setLoading(false);
+      });
+
+    return () => { alive = false; };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [enabled, ensName, leaseSeed?.parentNode, leaseSeed?.label, parentName]);
+
+  useEffect(() => {
+    if (!enabled || !resolvedEnsName) {
+      if (!resolvedEnsName) setRecords(null);
+      return;
+    }
+
+    let alive = true;
+    setLoading(true);
+    setError(null);
+
     getLeaseRecords(resolvedEnsName)
       .then((nextRecords) => {
         if (!alive) return;
@@ -79,14 +98,12 @@ export function useENSProfile({
         setLoading(false);
       });
 
-    return () => {
-      alive = false;
-    };
-  }, [enabled, ensName, leaseParentNode, leaseLabel, ownerLabel, resolvedEnsName]);
+    return () => { alive = false; };
+  }, [enabled, resolvedEnsName]);
 
   return {
     ensName: resolvedEnsName,
-    ownerLabel: ownerLabel as string | undefined,
+    ownerLabel,
     records,
     personaVerified: records?.personaVerified === 'true',
     loading,

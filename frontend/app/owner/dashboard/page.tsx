@@ -75,7 +75,7 @@ export default function OwnerDashboardPage() {
 
   if (!canManageOwnerFlow) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-gray-50 p-4">
+      <div className="min-h-screen flex items-center justify-center page-bg p-4">
         <WalletConnect
           role="owner"
           title="Owner Dashboard"
@@ -86,7 +86,7 @@ export default function OwnerDashboardPage() {
   }
 
   return (
-    <div className="min-h-screen bg-gray-50 p-4">
+    <div className="min-h-screen page-bg p-4">
       <div className="max-w-4xl mx-auto">
         <div className="flex items-center justify-between mb-6">
           <div>
